@@ -1,0 +1,3339 @@
+
+```{r}
+library(rstudioapi)
+library(tidyverse)
+library(tidymodels)
+#library(discrim)
+#library(baguette)
+#library(bonsai)
+library(patchwork)
+library(data.table)
+library(ggpubr)
+library(beepr)
+library(Boruta)
+library(ggforce)
+library(pROC)
+doParallel::registerDoParallel(14)
+set.seed(2234)
+```
+
+
+#2 | Load and Check Data
+```{r}
+Mydata <- read_csv("MPap.csv")
+Mydata$Malignant <- as.factor(Mydata$Malignant)
+
+#Log10 transform
+Mydata <- Mydata %>%
+  mutate(across(4:ncol(Mydata), log10))
+
+
+Mydata %>% glimpse()
+Mydata %>% head()
+Mydata %>% summary()
+Mydata2 <- Mydata
+Mydata_raw <- Mydata
+
+Mydata$Malignant %>% summary()
+Mydata_Malignant <- ggplot(data = Mydata, aes(x = Malignant)) +
+  stat_count(fill = "steelblue") +
+  labs(title = "Mydata Malignant", x = "Malignant", y = "Count") +
+  theme_minimal()
+
+Mydata_Malignant
+```
+
+
+
+
+#4 | Feature_select
+```{r}
+Mydata <- Mydata2 %>% select(c(Malignant, ADCY8, BHLHE22, CDO1, EPHA10, HSPE2, TBX5))
+# 將資料集中的 Malignant 變數的水平設定為以1為主
+#for tidymodels machine learning
+Mydata$Malignant <- factor(Mydata$Malignant, levels = c(1, 0))
+
+library(Boruta)
+feature_select <- Boruta(Malignant ~ ., data = Mydata)
+feature_select$finalDecision
+print(feature_select)
+
+boruta.train <- Boruta(Malignant ~ ., data = Mydata, doTrace = 2)
+print(boruta.train)
+boruta.train$finalDecision
+
+plot(boruta.train, xlab = "", xaxt = "n")
+lz <- lapply(1:ncol(boruta.train$ImpHistory), function(i)
+boruta.train$ImpHistory[is.finite(boruta.train$ImpHistory[,i]),i])
+names(lz) <- colnames(boruta.train$ImpHistory)
+Labels <- sort(sapply(lz, median))
+
+# Add axis without labels
+axis(side = 1, las=2, at = 1:ncol(boruta.train$ImpHistory), labels = FALSE)
+
+# Add labels at a 45 degree angle
+text(x = 1:ncol(boruta.train$ImpHistory), y = par("usr")[3] - 5, srt = 45, adj = c(0.7, 0), labels = names(Labels), xpd = TRUE)
+
+final.boruta <- TentativeRoughFix(boruta.train)
+print(final.boruta)
+
+# Adding legend
+legend("topleft", #x=0.25, y= 31,  # 圖例的位置
+       legend = c("Confirmed", "Tentative", "Rejected", "Shadow variables"),  # 圖例中的標籤
+       col = c("green3", "yellow2", "red2", "blue3"),  # 標籤對應的顏色
+       pch = 15,  # 使用方形符號
+       bty = "n",  # 不顯示圖例框
+       cex = 1, # 整體圖例大小
+       pt.cex = 2 # 圖例大小
+       )  
+
+
+
+png(file="boruta_1.png", width=2500, height=1500, res=300)
+plot(boruta.train, xlab = "", xaxt = "n")
+lz <- lapply(1:ncol(boruta.train$ImpHistory), function(i)
+boruta.train$ImpHistory[is.finite(boruta.train$ImpHistory[,i]),i])
+names(lz) <- colnames(boruta.train$ImpHistory)
+Labels <- sort(sapply(lz, median))
+
+# Add axis without labels
+axis(side = 1, las=2, at = 1:ncol(boruta.train$ImpHistory), labels = FALSE)
+
+# Add labels at a 45 degree angle
+text(x = 1:ncol(boruta.train$ImpHistory), y = par("usr")[3] - 5, srt = 45, adj = c(0.7, 0), labels = names(Labels), xpd = TRUE)
+
+final.boruta <- TentativeRoughFix(boruta.train)
+print(final.boruta)
+
+# Adding legend
+legend("topleft", #x=0.25, y= 31,  # 圖例的位置
+      # legend = c("Confirmed", "Tentative", "Rejected", "Shadow variables"),  # 圖例中的標籤
+      # col = c("green3", "yellow2", "red2", "blue3"),  # 標籤對應的顏色
+        legend = c("Confirmed variables", "Shadow variables"),  # 圖例中的標籤
+       col = c("green3", "blue3"),  # 標籤對應的顏色
+       pch = 15,  # 使用方形符號
+       bty = "n",  # 不顯示圖例框
+       cex = 1, # 整體圖例大小
+       pt.cex = 2 # 圖例大小
+       )  
+dev.off()
+```
+
+
+```
+
+
+# 切分資料
+```{r}
+set.seed(2234)
+Mydata <- Mydata2
+# 選取control的測試資料
+control_test <- Mydata %>%
+  filter(Malignant == "0") %>%
+  sample_n(size =20)
+
+# 選取case的測試資料
+case_test <- Mydata %>%
+  filter(Malignant == "1") %>%
+  sample_n(size =15)
+
+# 產生測試資料集
+Mydata_test <- rbind(control_test, case_test)
+Mydata_test$Malignant <- relevel(Mydata_test$Malignant, ref = "0")
+Mydata_test2 <- Mydata_test
+
+
+# 產生訓練資料集
+Mydata_train <- Mydata %>%
+  filter(!( ID %in% Mydata_test$ID))
+Mydata_train$Malignant <- relevel(Mydata_train$Malignant, ref = "0")
+
+Mydata_train2 <- Mydata_train
+
+Mydata_train$Malignant %>% summary()
+Mydata_train_Malignant <- ggplot(data = Mydata_train, aes(x = Malignant)) +
+  stat_count(fill = "steelblue") +
+  labs(title = "Mydata_train Malignant", x = "Malignant", y = "Count") +
+  theme_minimal()
+
+Mydata_test$Malignant %>% summary()
+Mydata_test_Malignant <- ggplot(data = Mydata_test, aes(x = Malignant)) +
+  stat_count(fill = "steelblue") +
+  labs(title = "Mydata_test Malignant", x = "Malignant", y = "Count") +
+  theme_minimal()
+
+Mydata_train_Malignant + Mydata_test_Malignant
+```
+
+
+
+
+
+```{r}
+#load gene combination set
+gene <- fread("gene.csv", header=T)
+#load metric set
+metric <- fread("metric.csv", header=T)
+
+#set contrl
+control <- control_grid(save_workflow = TRUE,
+                        save_pred = TRUE,
+                        extract = extract_model) # grid for tuning
+
+if (!exists("log_tune_results")) {
+  log_tune_results <- list()
+}
+
+if (!exists("svm_tune_results")) {
+  svm_tune_results <- list()
+}
+
+if (!exists("rf_tune_results")) {
+  rf_tune_results <- list()
+}
+
+if (!exists("xg_tune_results")) {
+  xg_tune_results <- list()
+}
+
+if (!exists("mlp_tune_results")) {
+  mlp_tune_results <- list()
+}
+
+
+dir.create("Result")
+mset <- metric_set(recall,sens,spec,precision,mcc,j_index,f_meas,accuracy,
+               kap,ppv,npv,bal_accuracy,detection_prevalence,roc_auc)
+```
+
+
+#開始迴圈
+```{r}
+set.seed(2234)
+
+# 將資料集中的 Malignant 變數的水平設定為以1為主
+##for tidymodels machine learning
+Mydata_train$Malignant <- factor(Mydata_train$Malignant, levels = c(1, 0))
+Mydata_train2$Malignant <- factor(Mydata_train2$Malignant, levels = c(1, 0))
+Mydata_test$Malignant <- factor(Mydata_test$Malignant, levels = c(1, 0))
+Mydata_test2$Malignant <- factor(Mydata_test2$Malignant, levels = c(1, 0))
+
+dir.create("Result")
+for (i in seq_len(nrow(gene))) {
+  x1 <- gene[[i, 'number']]
+  x2 <- strsplit(gene[[i, 'feature']], ', ')[[1]] # 分割字符串
+  x3 <- strsplit(gene[[i, 'outcome']], ', ')[[1]] # 分割字符串
+  x4 <- strsplit(gene[[i, 'predictor']], ', ')[[1]] # 分割字符串
+
+  print(x1)
+  print(x2)
+  
+#setup folder
+path1 = paste("Result/", x1, " genes", sep = '')
+dir.create(path1)
+
+
+#5 | Pre - Processing
+  #Mydata_train <- Mydata_train2 %>% select(all_of(x2))
+  #model_recipe <- recipe(Malignant ~ ., data = Mydata_train2)
+
+# 建立一個初始的 recipe
+model_recipe <- recipe(as.formula(paste(paste(x3), "~ ", paste("ID + ", paste(x4, collapse = " + ")))), data = Mydata_train2)
+# 更新變數角色
+model_recipe <- model_recipe %>% 
+ # update_role(paste(x3), new_role = "outcome") %>%
+ # update_role(paste(x4), new_role = "predictor") %>%
+  update_role(ID, new_role = "id")
+
+print(summary(model_recipe))
+
+
+
+#nornalized, recenter等放這邊
+
+# 使用訓練數據集建立處理參數(nornalized, recenter等)
+model_recipe <- model_recipe %>% prep(training = Mydata_train2)
+
+
+
+
+#6 | Training - Testing - Cross Validation
+Mydata_cv <- vfold_cv(Mydata_train, v = 5, repeats = 5, strata = "Malignant")
+
+#7 | Modelling with Machine Learning Algorithms
+#7.0 | Set up defaults
+#set metric
+for (i in seq_len(nrow(metric))) {
+#mset <- metric_set(!!sym(metric[[i, 'mset']]))
+mbest <- metric[[i, 'mbest']]
+#mset
+mbest
+
+path2 = paste("Result/", x1, " genes/", mbest, sep = '')
+dir.create(path2)
+path3 = paste(x1, "_", mbest, sep = '')
+path3
+
+#output progress
+cat("\n", x1, " genes\n", mbest, "\n", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), sep = "")
+
+
+#7.1| Logistic Regression
+cat("\n", x1, " genes-log\n", mbest, "\n", format(Sys.time(), "%Y-%m-%d %H:%M:%S", "\n"), sep = "")
+
+log_model <- 
+  logistic_reg(mode = "classification",
+               penalty = tune(),
+               mixture = tune(),
+               engine = "glmnet"
+  )
+
+#Set our workflow.
+log_wf <-
+  workflow() %>%
+  add_model(log_model) %>% 
+  add_recipe(model_recipe)
+log_wf
+
+#Use cross-validation to evaluate our model with different param config.
+log_tune_results[[path3]] <-
+  log_wf %>% 
+  tune_grid(resamples = Mydata_cv,
+            metrics = mset)
+
+#Visualize the results.
+autoplot(log_tune_results[[path3]])
+
+#Collect metrics.
+log_tune_results[[path3]] %>%
+  collect_metrics() %>%
+  arrange(desc(mean))
+
+#Fit model log
+#Use best config to fit model to training data.
+log_fit <- log_wf %>%
+  finalize_workflow(select_best(log_tune_results[[path3]], metric = mbest)) %>%
+  fit(Mydata_train)
+
+#Collect performance
+#Training set result
+log.a <- log_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  accuracy(Malignant, .pred_class)
+
+log.f <- log_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  f_meas(Malignant, .pred_class)
+
+log.p <- log_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  precision(Malignant, .pred_class)
+
+log.r <- log_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  recall(Malignant, .pred_class)
+
+log.sen <- log_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  sens(Malignant, .pred_class)
+
+log.spe <- log_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  spec(Malignant, .pred_class)
+
+log.ppv <- log_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  ppv(Malignant, .pred_class)
+
+log.npv <- log_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  npv(Malignant, .pred_class)
+
+ROC_011 <- log_fit %>%
+  augment(Mydata_train) %>%
+  roc_auc(Malignant, .pred_1)
+ROC_011
+
+Index_01 <- c()
+l = list(log.a, log.f, log.p, log.r, log.sen, log.spe, log.ppv, log.npv, ROC_011)
+Index_01 <- rbindlist(l, use.names=TRUE, fill=TRUE)
+Index_01 <- Index_01[, ".estimator" := NULL]
+Index_01
+
+log_train <- log_fit %>%
+  augment(Mydata_train)
+
+log_train <- log_train %>% 
+  mutate(Type = "train") %>%
+  relocate(Type, .before = 1)
+
+
+# 計算ROC曲線的置信區間
+pred_scores <- log_train$.pred_1
+truth_labels <- Mydata_train$Malignant
+
+roc_obj <- roc(truth_labels, pred_scores, levels = c(0, 1))
+
+ci_obj <- ci(roc_obj)
+ci_obj
+
+ci_lower <- ci_obj[1]
+ci_upper <- ci_obj[3]
+
+# 將其四捨五入到三個小數位
+ci_lower <- round(ci_lower, 3)
+ci_upper <- round(ci_upper, 3)
+
+# 輸出結果
+ROC_011_label <- paste0("AUC = ", round(ROC_011[[1, '.estimate']], 3), "\n", "95% CI: ", ci_lower, "-", ci_upper)  # 將小數點位數改為3
+
+ROC01_train_plt <- log_fit %>%
+  augment(Mydata_train) %>%
+  roc_curve(Malignant, .pred_1) %>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_abline(
+    lty = 2, alpha = 0.5,
+    color = "gray50",
+    linewidth = 1.2
+  ) + 
+  geom_path(linewidth = 1.2, color = "salmon") +
+  theme_minimal() +
+  labs(x = "1 - Specificity",
+       y = "Sensitivity",
+       title = "Logistic Regression")+
+  theme(plot.title = element_text(hjust = 0.5)) +
+
+  scale_x_continuous(breaks = seq(0, 1, 0.2)) +  #設定 x 軸刻度
+
+  scale_y_continuous(breaks = seq(0, 1, 0.2)) + #設定 y 軸刻度 
+  annotate(
+  geom = "text",  # 改為 "text" 移除框線
+    x = 0.22,  # 調整 x 座標
+    y = 0.10,  # 調整 y 座標
+    label = ROC_011_label, 
+    hjust = 0,  # 調整文字對齊，0 為左對齊，1 為右對齊
+    size = 4  # 調整文字大小
+  )
+
+
+ROC01_train_plt
+
+#Inspect significant features (aka predictors).
+log_fit %>%
+  tidy() %>%
+  mutate(term = fct_reorder(term, estimate)) %>%
+  ggplot(aes(estimate, term, fill = estimate > 0)) +
+  geom_col() +
+  theme(legend.position = "none")
+
+
+#Testing set result
+log.a <- log_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  accuracy(Malignant, .pred_class)
+
+log.f <- log_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  f_meas(Malignant, .pred_class)
+
+log.p <- log_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  precision(Malignant, .pred_class)
+
+log.r <- log_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  recall(Malignant, .pred_class)
+
+log.sen <- log_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  sens(Malignant, .pred_class)
+
+log.spe <- log_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  spec(Malignant, .pred_class)
+
+log.ppv <- log_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  ppv(Malignant, .pred_class)
+
+log.npv <- log_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  npv(Malignant, .pred_class)
+
+ROC_012 <- log_fit %>%
+  augment(Mydata_test) %>%
+  roc_auc(Malignant, .pred_1)
+ROC_012
+
+log_test <- log_fit %>%
+  augment(Mydata_test)
+
+log_test <- log_test %>% 
+  mutate(Type = "test") %>%
+  relocate(Type, .before = 1)
+
+# 計算ROC曲線的置信區間
+pred_scores <- log_test$.pred_1
+truth_labels <- Mydata_test$Malignant
+
+roc_obj <- roc(truth_labels, pred_scores, levels = c(0, 1))
+
+ci_obj <- ci(roc_obj)
+ci_obj
+
+ci_lower <- ci_obj[1]
+ci_upper <- ci_obj[3]
+
+# 將其四捨五入到三個小數位
+ci_lower <- round(ci_lower, 3)
+ci_upper <- round(ci_upper, 3)
+
+# 輸出結果
+ROC_012_label <- paste0("AUC = ", round(ROC_012[[1, '.estimate']], 3), "\n", "95% CI: ", ci_lower, "-", ci_upper)  # 將小數點位數改為3
+
+ROC01_test_plt <- log_fit %>%
+  augment(Mydata_test) %>%
+  roc_curve(Malignant, .pred_1) %>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_abline(
+    lty = 2, alpha = 0.5,
+    color = "gray50",
+    linewidth = 1.2
+  ) + 
+  geom_path(linewidth = 1.2, color = "salmon") +
+  theme_minimal() +
+  labs(x = "1 - Specificity",
+       y = "Sensitivity",
+       title = "Logistic Regression")+
+  theme(plot.title = element_text(hjust = 0.5)) +
+
+  scale_x_continuous(breaks = seq(0, 1, 0.2)) +  #設定 x 軸刻度
+
+  scale_y_continuous(breaks = seq(0, 1, 0.2)) + #設定 y 軸刻度 
+  annotate(
+  geom = "text",  # 改為 "text" 移除框線
+    x = 0.22,  # 調整 x 座標
+    y = 0.10,  # 調整 y 座標
+    label = ROC_012_label, 
+    hjust = 0,  # 調整文字對齊，0 為左對齊，1 為右對齊
+    size = 4  # 調整文字大小
+  )
+
+
+ROC01_test_plt
+
+
+
+#Combine
+l = list(Index_01, log.a, log.f, log.p, log.r, log.sen, log.spe, log.ppv, log.npv, ROC_012)
+Index_01 <- rbindlist(l, use.names=TRUE, fill=TRUE)
+Index_01 <- Index_01[, ".estimator" := NULL]
+Index_01
+fileName = paste(path2, '/01log-index-', mbest, '.csv', sep = '')
+write_csv(Index_01, fileName)
+
+#write_csv(Index_01, "01log-index.csv")
+
+
+l = list(log_train, log_test)
+result_01 <- rbindlist(l, use.names=TRUE, fill=TRUE)
+result_01 <- result_01 %>%
+  mutate(Order = row_number()) %>%
+  relocate(Order, .before = 1)
+
+fileName = paste(path2, '/01log-result-', mbest, '.csv', sep = '')
+write_csv(result_01, fileName)
+
+fileName = paste(path2, '/ROC01_train-', mbest, '.png', sep = '')
+png(file=fileName, width=1000, height=1000, res=300)
+print(ROC01_train_plt)
+dev.off()
+
+fileName = paste(path2, '/ROC01_test-', mbest, '.png', sep = '')
+png(file=fileName, width=1000, height=1000, res=300)
+print(ROC01_test_plt)
+dev.off()
+
+
+
+#7.3 | Support Vector Machines
+#Then specify a svm.
+cat("\n", x1, " genes-svm\n", mbest, "\n", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), sep = "")
+svm_model <- 
+  svm_rbf(mode = "classification",
+          cost = tune(),
+          rbf_sigma = tune(),
+          engine = "kernlab"
+  )
+
+#Set workflow.
+svm_wf <-
+  workflow() %>%
+  add_model(svm_model) %>% 
+  add_recipe(model_recipe)
+svm_wf
+
+#Use cross-validation to evaluate our model with different param config.
+svm_tune_results[[path3]] <- svm_wf %>%
+  tune_grid(resamples = Mydata_cv,
+            metrics = mset
+  )
+svm_tune_results[[path3]]
+
+#Visualize the results.
+autoplot(svm_tune_results[[path3]])
+
+#Collect metrics.
+svm_tune_results[[path3]] %>%
+  collect_metrics() %>%
+  arrange(desc(mean))
+
+Sys.time()
+
+#Fit model svm
+#Use best config to fit model to training data.
+svm_fit <- svm_wf %>%
+  finalize_workflow(select_best(svm_tune_results[[path3]], metric = mbest)) %>%
+  fit(Mydata_train)
+
+#Collect performance
+#Training set result
+svm.a <- svm_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  accuracy(Malignant, .pred_class)
+
+svm.f <- svm_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  f_meas(Malignant, .pred_class)
+
+svm.p <- svm_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  precision(Malignant, .pred_class)
+
+svm.r <- svm_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  recall(Malignant, .pred_class)
+
+svm.sen <- svm_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  sens(Malignant, .pred_class)
+
+svm.spe <- svm_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  spec(Malignant, .pred_class)
+
+svm.ppv <- svm_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  ppv(Malignant, .pred_class)
+
+svm.npv <- svm_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  npv(Malignant, .pred_class)
+
+ROC_031 <- svm_fit %>%
+  augment(Mydata_train) %>%
+  roc_auc(Malignant, .pred_1)
+ROC_031
+
+Index_03 <- c()
+l = list(svm.a, svm.f, svm.p, svm.r, svm.sen, svm.spe, svm.ppv, svm.npv, ROC_031)
+Index_03 <- rbindlist(l, use.names=TRUE, fill=TRUE)
+Index_03 <- Index_03[, ".estimator" := NULL]
+Index_03
+
+svm_train <- svm_fit %>%
+  augment(Mydata_train)
+
+svm_train <- svm_train %>% 
+  mutate(Type = "train") %>%
+  relocate(Type, .before = 1)
+
+# 計算ROC曲線的置信區間
+pred_scores <- svm_train$.pred_1
+truth_labels <- Mydata_train$Malignant
+
+roc_obj <- roc(truth_labels, pred_scores, levels = c(0, 1))
+
+ci_obj <- ci(roc_obj)
+ci_obj
+
+ci_lower <- ci_obj[1]
+ci_upper <- ci_obj[3]
+
+# 將其四捨五入到三個小數位
+ci_lower <- round(ci_lower, 3)
+ci_upper <- round(ci_upper, 3)
+
+# 輸出結果
+ROC_031_label <- paste0("AUC = ", round(ROC_031[[1, '.estimate']], 3), "\n", "95% CI: ", ci_lower, "-", ci_upper)  # 將小數點位數改為3
+
+ROC03_train_plt <- svm_fit %>%
+  augment(Mydata_train) %>%
+  roc_curve(Malignant, .pred_1) %>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_abline(
+    lty = 2, alpha = 0.5,
+    color = "gray50",
+    linewidth = 1.2
+  ) + 
+  geom_path(linewidth = 1.2, color = "salmon") +
+  theme_minimal() +
+  labs(x = "1 - Specificity",
+       y = "Sensitivity",
+       title = "Support Vector Machines")+
+  theme(plot.title = element_text(hjust = 0.5)) +
+
+  scale_x_continuous(breaks = seq(0, 1, 0.2)) +  #設定 x 軸刻度
+
+  scale_y_continuous(breaks = seq(0, 1, 0.2)) + #設定 y 軸刻度 
+  annotate(
+  geom = "text",  # 改為 "text" 移除框線
+    x = 0.22,  # 調整 x 座標
+    y = 0.10,  # 調整 y 座標
+    label = ROC_031_label, 
+    hjust = 0,  # 調整文字對齊，0 為左對齊，1 為右對齊
+    size = 4  # 調整文字大小
+  )
+
+
+ROC03_train_plt
+
+
+#Testing set result
+svm.a <- svm_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  accuracy(Malignant, .pred_class)
+
+svm.f <- svm_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  f_meas(Malignant, .pred_class)
+
+svm.p <- svm_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  precision(Malignant, .pred_class)
+
+svm.r <- svm_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  recall(Malignant, .pred_class)
+
+svm.sen <- svm_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  sens(Malignant, .pred_class)
+
+svm.spe <- svm_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  spec(Malignant, .pred_class)
+
+svm.ppv <- svm_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  ppv(Malignant, .pred_class)
+
+svm.npv <- svm_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  npv(Malignant, .pred_class)
+
+ROC_032 <- svm_fit %>%
+  augment(Mydata_test) %>%
+  roc_auc(Malignant, .pred_1)
+ROC_032
+
+svm_test <- svm_fit %>%
+  augment(Mydata_test)
+
+svm_test <- svm_test %>% 
+  mutate(Type = "test") %>%
+  relocate(Type, .before = 1)
+
+# 計算ROC曲線的置信區間
+pred_scores <- svm_test$.pred_1
+truth_labels <- Mydata_test$Malignant
+
+roc_obj <- roc(truth_labels, pred_scores, levels = c(0, 1))
+
+ci_obj <- ci(roc_obj)
+ci_obj
+
+ci_lower <- ci_obj[1]
+ci_upper <- ci_obj[3]
+
+# 將其四捨五入到三個小數位
+ci_lower <- round(ci_lower, 3)
+ci_upper <- round(ci_upper, 3)
+
+# 輸出結果
+ROC_032_label <- paste0("AUC = ", round(ROC_032[[1, '.estimate']], 3), "\n", "95% CI: ", ci_lower, "-", ci_upper)  # 將小數點位數改為3
+
+ROC03_test_plt <- svm_fit %>%
+  augment(Mydata_test) %>%
+  roc_curve(Malignant, .pred_1) %>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_abline(
+    lty = 2, alpha = 0.5,
+    color = "gray50",
+    linewidth = 1.2
+  ) + 
+  geom_path(linewidth = 1.2, color = "salmon") +
+  theme_minimal() +
+  labs(x = "1 - Specificity",
+       y = "Sensitivity",
+       title = "Support Vector Machines")+
+  theme(plot.title = element_text(hjust = 0.5)) +
+
+  scale_x_continuous(breaks = seq(0, 1, 0.2)) +  #設定 x 軸刻度
+
+  scale_y_continuous(breaks = seq(0, 1, 0.2)) + #設定 y 軸刻度 
+  annotate(
+  geom = "text",  # 改為 "text" 移除框線
+    x = 0.22,  # 調整 x 座標
+    y = 0.10,  # 調整 y 座標
+    label = ROC_032_label, 
+    hjust = 0,  # 調整文字對齊，0 為左對齊，1 為右對齊
+    size = 4  # 調整文字大小
+  )
+
+
+ROC03_test_plt
+
+
+
+#Combine
+l = list(Index_03, svm.a, svm.f, svm.p, svm.r, svm.sen, svm.spe, svm.ppv, svm.npv, ROC_032)
+Index_03 <- rbindlist(l, use.names=TRUE, fill=TRUE)
+Index_03 <- Index_03[, ".estimator" := NULL]
+Index_03
+fileName = paste(path2, '/03svm-index-', mbest, '.csv', sep = '')
+write_csv(Index_03, fileName)
+
+#write_csv(Index_03, "03svm-index.csv")
+
+
+l = list(svm_train, svm_test)
+result_03 <- rbindlist(l, use.names=TRUE, fill=TRUE)
+result_03 <- result_03 %>%
+  mutate(Order = row_number()) %>%
+  relocate(Order, .before = 1)
+
+fileName = paste(path2, '/03svm-result-', mbest, '.csv', sep = '')
+write_csv(result_03, fileName)
+
+Sys.time()
+
+fileName = paste(path2, '/ROC03_train-', mbest, '.png', sep = '')
+png(file=fileName, width=1000, height=1000, res=300)
+print(ROC03_train_plt)
+dev.off()
+
+fileName = paste(path2, '/ROC03_test-', mbest, '.png', sep = '')
+png(file=fileName, width=1000, height=1000, res=300)
+print(ROC03_test_plt)
+dev.off()
+
+
+#7.6 | Random Forest
+cat("\n", x1, " genes-rf\n", mbest, "\n", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), sep = "")
+
+rf_model <- rand_forest(mode = "classification",
+              mtry = tune(),
+              trees = tune(),
+              min_n = tune(),
+              engine = "ranger")
+
+rf_wf <-
+  workflow() %>%
+  add_model(rf_model) %>% 
+  add_recipe(model_recipe)
+
+# 創建參數網格
+param_grid <- parameters(rf_model) %>%
+  update(
+    mtry = mtry(range = c(1, sqrt(ncol(Mydata_train2))), trans = scales::log2_trans()),
+    trees = trees(range = c(100L, 1000L)),
+    min_n = min_n(range = c(1L, 20L))
+  )
+
+rf_tune_results[[path3]] <- 
+  tune_bayes(
+    object = rf_wf, 
+    resamples = Mydata_cv,
+    initial = 10, 
+    iter = 100, 
+    param_info = param_grid,
+    metrics = mset
+  )
+
+
+#Use cross-validation to evaluate our model with different param config.
+#rf_tune_results[[path3]] <-
+#  rf_wf %>%
+#  tune_grid(resamples = Mydata_cv,
+#            metrics = mset
+#  )
+
+
+#Visualize the results.
+autoplot(rf_tune_results[[path3]])
+
+#Collect metrics.
+rf_tune_results[[path3]] %>%
+  collect_metrics() %>%
+  arrange(desc(mean))
+
+Sys.time()
+
+#Fit model rf
+#Use best config to fit model to training data.
+rf_fit <- rf_wf %>%
+  finalize_workflow(select_best(rf_tune_results[[path3]], metric = mbest)) %>%
+  fit(Mydata_train)
+
+#Collect performance
+#Training set result
+rf.a <- rf_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  accuracy(Malignant, .pred_class)
+
+rf.f <- rf_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  f_meas(Malignant, .pred_class)
+
+rf.p <- rf_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  precision(Malignant, .pred_class)
+
+rf.r <- rf_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  recall(Malignant, .pred_class)
+
+rf.sen <- rf_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  sens(Malignant, .pred_class)
+
+rf.spe <- rf_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  spec(Malignant, .pred_class)
+
+rf.ppv <- rf_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  ppv(Malignant, .pred_class)
+
+rf.npv <- rf_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  npv(Malignant, .pred_class)
+
+ROC_061 <- rf_fit %>%
+  augment(Mydata_train) %>%
+  roc_auc(Malignant, .pred_1)
+ROC_061
+
+Index_06 <- c()
+l = list(rf.a, rf.f, rf.p, rf.r, rf.sen, rf.spe, rf.ppv, rf.npv, ROC_061)
+Index_06 <- rbindlist(l, use.names=TRUE, fill=TRUE)
+Index_06 <- Index_06[, ".estimator" := NULL]
+Index_06
+
+rf_train <- rf_fit %>%
+  augment(Mydata_train)
+
+rf_train <- rf_train %>% 
+  mutate(Type = "train") %>%
+  relocate(Type, .before = 1)
+
+# 計算ROC曲線的置信區間
+pred_scores <- rf_train$.pred_1
+truth_labels <- Mydata_train$Malignant
+
+roc_obj <- roc(truth_labels, pred_scores, levels = c(0, 1))
+
+ci_obj <- ci(roc_obj)
+ci_obj
+
+ci_lower <- ci_obj[1]
+ci_upper <- ci_obj[3]
+
+# 將其四捨五入到三個小數位
+ci_lower <- round(ci_lower, 3)
+ci_upper <- round(ci_upper, 3)
+
+# 輸出結果
+ROC_061_label <- paste0("AUC = ", round(ROC_061[[1, '.estimate']], 3), "\n", "95% CI: ", ci_lower, "-", ci_upper)  # 將小數點位數改為3
+
+ROC06_train_plt <- rf_fit %>%
+  augment(Mydata_train) %>%
+  roc_curve(Malignant, .pred_1) %>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_abline(
+    lty = 2, alpha = 0.5,
+    color = "gray50",
+    linewidth = 1.2
+  ) + 
+  geom_path(linewidth = 1.2, color = "salmon") +
+  theme_minimal() +
+  labs(x = "1 - Specificity",
+       y = "Sensitivity",
+       title = "Random Forest")+
+  theme(plot.title = element_text(hjust = 0.5)) +
+
+  scale_x_continuous(breaks = seq(0, 1, 0.2)) +  #設定 x 軸刻度
+
+  scale_y_continuous(breaks = seq(0, 1, 0.2)) + #設定 y 軸刻度 
+  annotate(
+  geom = "text",  # 改為 "text" 移除框線
+    x = 0.22,  # 調整 x 座標
+    y = 0.10,  # 調整 y 座標
+    label = ROC_061_label, 
+    hjust = 0,  # 調整文字對齊，0 為左對齊，1 為右對齊
+    size = 4  # 調整文字大小
+  )
+
+
+ROC06_train_plt
+
+
+#Testing set result
+rf.a <- rf_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  accuracy(Malignant, .pred_class)
+
+rf.f <- rf_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  f_meas(Malignant, .pred_class)
+
+rf.p <- rf_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  precision(Malignant, .pred_class)
+
+rf.r <- rf_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  recall(Malignant, .pred_class)
+
+rf.sen <- rf_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  sens(Malignant, .pred_class)
+
+rf.spe <- rf_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  spec(Malignant, .pred_class)
+
+rf.ppv <- rf_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  ppv(Malignant, .pred_class)
+
+rf.npv <- rf_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  npv(Malignant, .pred_class)
+
+ROC_062 <- rf_fit %>%
+  augment(Mydata_test) %>%
+  roc_auc(Malignant, .pred_1)
+ROC_062
+
+rf_test <- rf_fit %>%
+  augment(Mydata_test)
+
+rf_test <- rf_test %>% 
+  mutate(Type = "test") %>%
+  relocate(Type, .before = 1)
+
+# 計算ROC曲線的置信區間
+pred_scores <- rf_test$.pred_1
+truth_labels <- Mydata_test$Malignant
+
+roc_obj <- roc(truth_labels, pred_scores, levels = c(0, 1))
+
+ci_obj <- ci(roc_obj)
+ci_obj
+
+ci_lower <- ci_obj[1]
+ci_upper <- ci_obj[3]
+
+# 將其四捨五入到三個小數位
+ci_lower <- round(ci_lower, 3)
+ci_upper <- round(ci_upper, 3)
+
+# 輸出結果
+ROC_062_label <- paste0("AUC = ", round(ROC_062[[1, '.estimate']], 3), "\n", "95% CI: ", ci_lower, "-", ci_upper)  # 將小數點位數改為3
+
+ROC06_test_plt <- rf_fit %>%
+  augment(Mydata_test) %>%
+  roc_curve(Malignant, .pred_1) %>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_abline(
+    lty = 2, alpha = 0.5,
+    color = "gray50",
+    linewidth = 1.2
+  ) + 
+  geom_path(linewidth = 1.2, color = "salmon") +
+  theme_minimal() +
+  labs(x = "1 - Specificity",
+       y = "Sensitivity",
+       title = "Random Forest")+
+  theme(plot.title = element_text(hjust = 0.5)) +
+
+  scale_x_continuous(breaks = seq(0, 1, 0.2)) +  #設定 x 軸刻度
+
+  scale_y_continuous(breaks = seq(0, 1, 0.2)) + #設定 y 軸刻度 
+  annotate(
+  geom = "text",  # 改為 "text" 移除框線
+    x = 0.22,  # 調整 x 座標
+    y = 0.10,  # 調整 y 座標
+    label = ROC_062_label, 
+    hjust = 0,  # 調整文字對齊，0 為左對齊，1 為右對齊
+    size = 4  # 調整文字大小
+  )
+
+
+ROC06_test_plt
+
+#Combine
+l = list(Index_06, rf.a, rf.f, rf.p, rf.r, rf.sen, rf.spe, rf.ppv, rf.npv, ROC_062)
+Index_06 <- rbindlist(l, use.names=TRUE, fill=TRUE)
+Index_06 <- Index_06[, ".estimator" := NULL]
+Index_06
+Index_06
+fileName = paste(path2, '/06rf-index-', mbest, '.csv', sep = '')
+write_csv(Index_06, fileName)
+
+#write_csv(Index_06, "06rf-index.csv")
+
+
+l = list(rf_train, rf_test)
+result_06 <- rbindlist(l, use.names=TRUE, fill=TRUE)
+result_06 <- result_06 %>%
+  mutate(Order = row_number()) %>%
+  relocate(Order, .before = 1)
+
+fileName = paste(path2, '/06rf-result-', mbest, '.csv', sep = '')
+write_csv(result_06, fileName)
+#write_csv(result_06, "06rf-result.csv")
+
+Sys.time()
+
+fileName = paste(path2, '/ROC06_train-', mbest, '.png', sep = '')
+png(file=fileName, width=1000, height=1000, res=300)
+print(ROC06_train_plt)
+dev.off()
+
+fileName = paste(path2, '/ROC06_test-', mbest, '.png', sep = '')
+png(file=fileName, width=1000, height=1000, res=300)
+print(ROC06_test_plt)
+dev.off()
+
+
+#7.9 | Gradient boosting algorithms - XGBoost
+#Tuning
+#Then specify a gradient boosting model.
+cat("\n", x1, " genes-xg\n", mbest, "\n", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), sep = "")
+xg_model <- boost_tree(mode = "classification", # binary response
+                       trees = tune(),
+                       mtry = tune(),
+                       tree_depth = tune(),
+                       learn_rate = tune(),
+                       loss_reduction = tune(),
+                       min_n = tune()) # parameters to be tuned
+
+#Now set our workflow.
+xg_wf <- 
+  workflow() %>% 
+  add_model(xg_model) %>% 
+  add_recipe(model_recipe)
+
+#Use cross-validation to evaluate our model with different param config.
+xg_tune_results[[path3]] <- xg_wf %>%
+  tune_grid(Mydata_cv,
+            metrics = mset,
+            control = control,
+            grid = crossing(trees = 1000,
+                            mtry = c(3, 5, 8), # finalize(mtry(), train)
+                            tree_depth = c(5, 10, 15),
+                            learn_rate = c(0.01, 0.005),
+                            loss_reduction = c(0.01, 0.1, 1),
+                            min_n = c(2, 10, 25)))
+
+#Visualize the results.
+autoplot(xg_tune_results[[path3]]) + theme_light()
+
+#Collect metrics.
+xg_tune_results[[path3]] %>%
+  collect_metrics() %>%
+  arrange(desc(mean))
+
+Sys.time()
+
+
+#Fit model xg
+#Use best config to fit model to training data.
+xg_fit <- xg_wf %>%
+  finalize_workflow(select_best(xg_tune_results[[path3]], metric = mbest)) %>%
+  fit(Mydata_train)
+
+#Collect performance
+#Training set result
+xg.a <- xg_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  accuracy(Malignant, .pred_class)
+
+xg.f <- xg_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  f_meas(Malignant, .pred_class)
+
+xg.p <- xg_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  precision(Malignant, .pred_class)
+
+xg.r <- xg_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  recall(Malignant, .pred_class)
+
+xg.sen <- xg_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  sens(Malignant, .pred_class)
+
+xg.spe <- xg_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  spec(Malignant, .pred_class)
+
+xg.ppv <- xg_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  ppv(Malignant, .pred_class)
+
+xg.npv <- xg_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  npv(Malignant, .pred_class)
+
+ROC_091 <- xg_fit %>%
+  augment(Mydata_train) %>%
+  roc_auc(Malignant, .pred_1)
+ROC_091
+
+Index_09 <- c()
+l = list(xg.a, xg.f, xg.p, xg.r, xg.sen, xg.spe, xg.ppv, xg.npv, ROC_091)
+Index_09 <- rbindlist(l, use.names=TRUE, fill=TRUE)
+Index_09 <- Index_09[, ".estimator" := NULL]
+Index_09
+
+xg_train <- xg_fit %>%
+  augment(Mydata_train)
+
+xg_train <- xg_train %>% 
+  mutate(Type = "train") %>%
+  relocate(Type, .before = 1)
+
+# 計算ROC曲線的置信區間
+pred_scores <- xg_train$.pred_1
+truth_labels <- Mydata_train$Malignant
+
+roc_obj <- roc(truth_labels, pred_scores, levels = c(0, 1))
+
+ci_obj <- ci(roc_obj)
+ci_obj
+
+ci_lower <- ci_obj[1]
+ci_upper <- ci_obj[3]
+
+# 將其四捨五入到三個小數位
+ci_lower <- round(ci_lower, 3)
+ci_upper <- round(ci_upper, 3)
+
+# 輸出結果
+ROC_091_label <- paste0("AUC = ", round(ROC_091[[1, '.estimate']], 3), "\n", "95% CI: ", ci_lower, "-", ci_upper)  # 將小數點位數改為3
+
+
+ROC09_train_plt <- xg_fit %>%
+  augment(Mydata_train) %>%
+  roc_curve(Malignant, .pred_1) %>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_abline(
+    lty = 2, alpha = 0.5,
+    color = "gray50",
+    linewidth = 1.2
+  ) + 
+  geom_path(linewidth = 1.2, color = "salmon") +
+  theme_minimal() +
+  labs(x = "1 - Specificity",
+       y = "Sensitivity",
+       title = "XGBoost")+
+  theme(plot.title = element_text(hjust = 0.5)) +
+
+  scale_x_continuous(breaks = seq(0, 1, 0.2)) +  #設定 x 軸刻度
+
+  scale_y_continuous(breaks = seq(0, 1, 0.2)) + #設定 y 軸刻度 
+  annotate(
+  geom = "text",  # 改為 "text" 移除框線
+    x = 0.22,  # 調整 x 座標
+    y = 0.10,  # 調整 y 座標
+    label = ROC_091_label, 
+    hjust = 0,  # 調整文字對齊，0 為左對齊，1 為右對齊
+    size = 4  # 調整文字大小
+  )
+
+
+ROC09_train_plt
+
+
+
+#Check out important features (aka predictors).
+importances <- xgboost::xgb.importance(model = extract_fit_engine(xg_fit))
+importances %>%
+  mutate(Feature = fct_reorder(Feature, Gain)) %>%
+  ggplot(aes(Gain, Feature)) +
+  geom_col()
+
+
+#Testing set result
+xg.a <- xg_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  accuracy(Malignant, .pred_class)
+
+xg.f <- xg_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  f_meas(Malignant, .pred_class)
+
+xg.p <- xg_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  precision(Malignant, .pred_class)
+
+xg.r <- xg_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  recall(Malignant, .pred_class)
+
+xg.sen <- xg_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  sens(Malignant, .pred_class)
+
+xg.spe <- xg_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  spec(Malignant, .pred_class)
+
+xg.ppv <- xg_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  ppv(Malignant, .pred_class)
+
+xg.npv <- xg_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  npv(Malignant, .pred_class)
+
+ROC_092 <- xg_fit %>%
+  augment(Mydata_test) %>%
+  roc_auc(Malignant, .pred_1)
+ROC_092
+
+xg_test <- xg_fit %>%
+  augment(Mydata_test)
+
+xg_test <- xg_test %>% 
+  mutate(Type = "test") %>%
+  relocate(Type, .before = 1)
+
+# 計算ROC曲線的置信區間
+pred_scores <- xg_test$.pred_1
+truth_labels <- Mydata_test$Malignant
+
+roc_obj <- roc(truth_labels, pred_scores, levels = c(0, 1))
+
+ci_obj <- ci(roc_obj)
+ci_obj
+
+ci_lower <- ci_obj[1]
+ci_upper <- ci_obj[3]
+
+# 將其四捨五入到三個小數位
+ci_lower <- round(ci_lower, 3)
+ci_upper <- round(ci_upper, 3)
+
+# 輸出結果
+ROC_092_label <- paste0("AUC = ", round(ROC_092[[1, '.estimate']], 3), "\n", "95% CI: ", ci_lower, "-", ci_upper)  # 將小數點位數改為3
+
+ROC09_test_plt <- xg_fit %>%
+  augment(Mydata_test) %>%
+  roc_curve(Malignant, .pred_1) %>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_abline(
+    lty = 2, alpha = 0.5,
+    color = "gray50",
+    linewidth = 1.2
+  ) + 
+  geom_path(linewidth = 1.2, color = "salmon") +
+  theme_minimal() +
+  labs(x = "1 - Specificity",
+       y = "Sensitivity",
+       title = "XGBoost")+
+  theme(plot.title = element_text(hjust = 0.5)) +
+
+  scale_x_continuous(breaks = seq(0, 1, 0.2)) +  #設定 x 軸刻度
+
+  scale_y_continuous(breaks = seq(0, 1, 0.2)) + #設定 y 軸刻度 
+  annotate(
+  geom = "text",  # 改為 "text" 移除框線
+    x = 0.22,  # 調整 x 座標
+    y = 0.10,  # 調整 y 座標
+    label = ROC_092_label, 
+    hjust = 0,  # 調整文字對齊，0 為左對齊，1 為右對齊
+    size = 4  # 調整文字大小
+  )
+
+
+ROC09_test_plt
+
+#Combine
+l = list(Index_09, xg.a, xg.f, xg.p, xg.r, xg.sen, xg.spe, xg.ppv, xg.npv, ROC_092)
+Index_09 <- rbindlist(l, use.names=TRUE, fill=TRUE)
+Index_09 <- Index_09[, ".estimator" := NULL]
+Index_09
+fileName = paste(path2, '/09xg-index-', mbest, '.csv', sep = '')
+write_csv(Index_09, fileName)
+
+#write_csv(Index_09, "09xg-index.csv")
+
+
+
+l = list(xg_train, xg_test)
+result_09 <- rbindlist(l, use.names=TRUE, fill=TRUE)
+result_09 <- result_09 %>%
+  mutate(Order = row_number()) %>%
+  relocate(Order, .before = 1)
+
+fileName = paste(path2, '/09xg-result-', mbest, '.csv', sep = '')
+write_csv(result_09, fileName)
+
+
+#write_csv(result_09, "09xg-result.csv")
+
+Sys.time()
+
+fileName = paste(path2, '/ROC09_train-', mbest, '.png', sep = '')
+png(file=fileName, width=1000, height=1000, res=300)
+print(ROC09_train_plt)
+dev.off()
+
+fileName = paste(path2, '/ROC09_test-', mbest, '.png', sep = '')
+png(file=fileName, width=1000, height=1000, res=300)
+print(ROC09_test_plt)
+dev.off()
+
+
+#7.10 | Multilayer Perceptron
+# 建立模型規格，此處我們將神經元數量和懲罰項設為可調參數
+#mlp_model <- 
+#  mlp(mode = "classification",
+#     hidden_units = tune(),
+#      penalty = tune(),
+ #     epochs = tune(),
+#      engine = "nnet"
+#  )
+cat("\n", x1, " genes-mlp\n", mbest, "\n", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), sep = "")
+mlp_model <- mlp(
+  mode = "classification",
+  hidden_units = tune(),
+  penalty = tune(),
+  epochs = 100
+) %>%
+  set_engine("nnet")
+
+# 添加早期停止回調函數
+#stop_early <- callback_early_stopping(
+#  monitor = "val_loss", 
+#  patience = 10
+#)
+
+# 設定調參網格
+#param_grid <- grid_max_entropy(
+#  hidden_units(range = c(10L, 100L)),
+#  penalty(range = c(0.001, 0.1), trans = scales::log10_trans()),
+ # size = 25
+#)
+
+
+param_grid <- grid_max_entropy(
+  hidden_units(range = c(10L, 300L)),  # 將神經元數量範圍擴大到 200
+ penalty(range = c(0.00001, 1), trans = scales::log10_trans()),  # 將懲罰項範圍擴大
+  size = 100  # 增加網格大小
+)
+
+
+# 建立工作流
+mlp_wf <-
+  workflow() %>%
+  add_model(mlp_model) %>% 
+  add_recipe(model_recipe)
+
+
+# 使用mbest進行調參
+mlp_tune_results[[path3]] <- tune_grid(
+  mlp_wf,
+  resamples = Mydata_cv,
+  grid = param_grid,
+  control = control_grid(verbose = TRUE),
+  metrics = mset,
+ # callbacks = list(stop_early)
+)
+
+#Visualize the results.
+autoplot(mlp_tune_results[[path3]])
+
+#Collect metrics.
+mlp_tune_results[[path3]] %>%
+  collect_metrics() %>%
+  arrange(desc(mean))
+
+#Visualize the results.
+autoplot(mlp_tune_results[[path3]])
+
+#Collect metrics.
+mlp_tune_results[[path3]] %>%
+  collect_metrics() %>%
+  arrange(desc(mean))
+
+Sys.time()
+
+#Fit model mlp
+#Use best config to fit model to training data.
+mlp_fit <- mlp_wf %>%
+  finalize_workflow(select_best(mlp_tune_results[[path3]], metric = mbest)) %>%
+  fit(Mydata_train)
+
+#Collect performance
+#Training set result
+mlp.a <- mlp_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  accuracy(Malignant, .pred_class)
+
+mlp.f <- mlp_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  f_meas(Malignant, .pred_class)
+
+mlp.p <- mlp_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  precision(Malignant, .pred_class)
+
+mlp.r <- mlp_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  recall(Malignant, .pred_class)
+
+mlp.sen <- mlp_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  sens(Malignant, .pred_class)
+
+mlp.spe <- mlp_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  spec(Malignant, .pred_class)
+
+mlp.ppv <- mlp_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  ppv(Malignant, .pred_class)
+
+mlp.npv <- mlp_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  npv(Malignant, .pred_class)
+
+ROC_101 <- mlp_fit %>%
+  augment(Mydata_train) %>%
+  roc_auc(Malignant, .pred_1)
+ROC_101
+
+Index_10 <- c()
+l = list(mlp.a, mlp.f, mlp.p, mlp.r, mlp.sen, mlp.spe, mlp.ppv, mlp.npv, ROC_101)
+Index_10 <- rbindlist(l, use.names=TRUE, fill=TRUE)
+Index_10 <- Index_10[, ".estimator" := NULL]
+Index_10
+
+mlp_train <- mlp_fit %>%
+  augment(Mydata_train)
+
+mlp_train <- mlp_train %>% 
+  mutate(Type = "train") %>%
+  relocate(Type, .before = 1)
+
+# 計算ROC曲線的置信區間
+pred_scores <- mlp_train$.pred_1
+truth_labels <- Mydata_train$Malignant
+
+roc_obj <- roc(truth_labels, pred_scores, levels = c(0, 1))
+
+ci_obj <- ci(roc_obj)
+ci_obj
+
+ci_lower <- ci_obj[1]
+ci_upper <- ci_obj[3]
+
+# 將其四捨五入到三個小數位
+ci_lower <- round(ci_lower, 3)
+ci_upper <- round(ci_upper, 3)
+
+# 輸出結果
+ROC_101_label <- paste0("AUC = ", round(ROC_101[[1, '.estimate']], 3), "\n", "95% CI: ", ci_lower, "-", ci_upper)  # 將小數點位數改為3
+
+
+ROC10_train_plt <- mlp_fit %>%
+  augment(Mydata_train) %>%
+  roc_curve(Malignant, .pred_1) %>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_abline(
+    lty = 2, alpha = 0.5,
+    color = "gray50",
+    linewidth = 1.2
+  ) + 
+  geom_path(linewidth = 1.2, color = "salmon") +
+  theme_minimal() +
+  labs(x = "1 - Specificity",
+       y = "Sensitivity",
+       title = "Multilayer Perceptron")+
+  theme(plot.title = element_text(hjust = 0.5)) +
+
+  scale_x_continuous(breaks = seq(0, 1, 0.2)) +  #設定 x 軸刻度
+
+  scale_y_continuous(breaks = seq(0, 1, 0.2)) + #設定 y 軸刻度 
+  annotate(
+  geom = "text",  # 改為 "text" 移除框線
+    x = 0.22,  # 調整 x 座標
+    y = 0.10,  # 調整 y 座標
+    label = ROC_101_label, 
+    hjust = 0,  # 調整文字對齊，0 為左對齊，1 為右對齊
+    size = 4  # 調整文字大小
+  )
+
+
+ROC10_train_plt
+
+#Testing set result
+mlp.a <- mlp_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  accuracy(Malignant, .pred_class)
+
+mlp.f <- mlp_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  f_meas(Malignant, .pred_class)
+
+mlp.p <- mlp_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  precision(Malignant, .pred_class)
+
+mlp.r <- mlp_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  recall(Malignant, .pred_class)
+
+mlp.sen <- mlp_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  sens(Malignant, .pred_class)
+
+mlp.spe <- mlp_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  spec(Malignant, .pred_class)
+
+mlp.ppv <- mlp_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  ppv(Malignant, .pred_class)
+
+mlp.npv <- mlp_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  npv(Malignant, .pred_class)
+
+ROC_102 <- mlp_fit %>%
+  augment(Mydata_test) %>%
+  roc_auc(Malignant, .pred_1)
+ROC_102
+
+mlp_test <- mlp_fit %>%
+  augment(Mydata_test)
+
+mlp_test <- mlp_test %>% 
+  mutate(Type = "test") %>%
+  relocate(Type, .before = 1)
+
+# 計算ROC曲線的置信區間
+pred_scores <- mlp_test$.pred_1
+truth_labels <- Mydata_test$Malignant
+
+roc_obj <- roc(truth_labels, pred_scores, levels = c(0, 1))
+
+ci_obj <- ci(roc_obj)
+ci_obj
+
+ci_lower <- ci_obj[1]
+ci_upper <- ci_obj[3]
+
+# 將其四捨五入到三個小數位
+ci_lower <- round(ci_lower, 3)
+ci_upper <- round(ci_upper, 3)
+
+# 輸出結果
+ROC_102_label <- paste0("AUC = ", round(ROC_102[[1, '.estimate']], 3), "\n", "95% CI: ", ci_lower, "-", ci_upper)  # 將小數點位數改為3
+
+ROC10_test_plt <- mlp_fit %>%
+  augment(Mydata_test) %>%
+  roc_curve(Malignant, .pred_1) %>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_abline(
+    lty = 2, alpha = 0.5,
+    color = "gray50",
+    linewidth = 1.2
+  ) + 
+  geom_path(linewidth = 1.2, color = "salmon") +
+  theme_minimal() +
+  labs(x = "1 - Specificity",
+       y = "Sensitivity",
+       title = "Multilayer Perceptron")+
+  theme(plot.title = element_text(hjust = 0.5)) +
+
+  scale_x_continuous(breaks = seq(0, 1, 0.2)) +  #設定 x 軸刻度
+
+  scale_y_continuous(breaks = seq(0, 1, 0.2)) + #設定 y 軸刻度 
+  annotate(
+  geom = "text",  # 改為 "text" 移除框線
+    x = 0.22,  # 調整 x 座標
+    y = 0.10,  # 調整 y 座標
+    label = ROC_102_label, 
+    hjust = 0,  # 調整文字對齊，0 為左對齊，1 為右對齊
+    size = 4  # 調整文字大小
+  )
+
+
+ROC10_test_plt
+
+#Combine
+l = list(Index_10, mlp.a, mlp.f, mlp.p, mlp.r, mlp.sen, mlp.spe, mlp.ppv, mlp.npv, ROC_102)
+Index_10 <- rbindlist(l, use.names=TRUE, fill=TRUE)
+Index_10 <- Index_10[, ".estimator" := NULL]
+Index_10
+fileName = paste(path2, '/10mlp-index-', mbest, '.csv', sep = '')
+write_csv(Index_10, fileName)
+
+
+l = list(mlp_train, mlp_test)
+result_10 <- rbindlist(l, use.names=TRUE, fill=TRUE)
+result_10 <- result_10 %>%
+  mutate(Order = row_number()) %>%
+  relocate(Order, .before = 1)
+
+fileName = paste(path2, '/10mlp-result-', mbest, '.csv', sep = '')
+write_csv(result_10, fileName)
+
+Sys.time()
+
+
+fileName = paste(path2, '/ROC10_train-', mbest, '.png', sep = '')
+png(file=fileName, width=1000, height=1000, res=300)
+print(ROC10_train_plt)
+dev.off()
+
+fileName = paste(path2, '/ROC10_test-', mbest, '.png', sep = '')
+png(file=fileName, width=1000, height=1000, res=300)
+print(ROC10_test_plt)
+dev.off()
+
+
+#Combined data
+fileName = paste(path2, '/', x1, ' gene-train-', mbest, '.png', sep = '')
+plot_list <- ggarrange(ROC01_train_plt, ROC10_train_plt, ROC06_train_plt, ROC03_train_plt, ROC09_train_plt,
+          ncol = 5,
+          nrow = 1)
+png(file=fileName, width=4000, height=1000, res=300)
+print(plot_list)
+dev.off()
+
+fileName = paste(path2, '/', x1, ' gene-test-', mbest, '.png', sep = '')
+plot_list <- ggarrange(ROC01_test_plt, ROC10_test_plt, ROC06_test_plt, ROC03_test_plt, ROC09_test_plt,
+          ncol = 5,
+          nrow = 1)
+
+png(file=fileName, width=4000, height=1000, res=300)
+print(plot_list)
+dev.off()
+
+
+cbindlist <- function(list) {
+	n <- length(list)
+	res <- NULL
+	for (i in seq(n)) res <- cbind(res, list[[i]])
+	return(res)
+}
+l = list(Index_01, Index_10, Index_06, Index_03, Index_09)
+Indexs <- cbindlist(l)
+colnames(Indexs)<-c("Logistic Regression", ".estimate", "Multilayer Perceptron", ".estimate", "Random Forest", ".estimate", "Support Vector Machines", ".estimate", "XGBoost", ".estimate") 
+Indexs
+
+fileName = paste(path2, '/Indexs-', x1, ' gene-', mbest, '.csv', sep = '')
+fwrite(Indexs, fileName, row.names=T)
+
+}
+}
+```
+
+
+
+
+#save RData
+```{r}
+# 獲取當前編輯器的上下文資訊
+RData_filename <- getSourceEditorContext()
+
+# 獲取當前編輯的文件的名稱（不包括擴展名）
+RData_filename <- basename(RData_filename$path)
+RData_filename <- sub("\\.Rmd$", "", RData_filename)
+
+# 組合檔名
+RData_filename1 <- paste0(RData_filename, '.RData')
+
+# 保存当前R环境中的物件為.RData文件
+#save(log_tune_results, svm_tune_results, rf_tune_results, xg_tune_results, mlp_tune_results, file = RData_filename1)
+
+# 儲存全部
+# 將引號和檔名組合
+RData_filename2 <- paste0(RData_filename, '2.RData')
+
+# 儲存工作空間的映像到一個名為當前 Rmd 文件名稱的 .RData 檔案
+save.image(RData_filename1)
+
+# 输出保存的文件名
+cat("已将当前R中的物件保存为", RData_filename1)
+```
+
+
+
+
+
+
+
+
+
+```{r}
+save.image("/Volumes/2T_SSD/EmCa/230613-1.3.RData")
+beep(8)
+```
+
+
+
+
+
+```{r}
+library(pROC)
+# 首先，你需要預測的分數和真實的標籤
+# 在這裡，我們假設pred_scores是你的模型對每個觀察值預測為正類（例如，惡性）的機率
+# 真實的標籤truth_labels是每個觀察值的真實標籤（例如，0表示良性，1表示惡性）
+pred_scores <- mlp_train$.pred_1
+truth_labels <- Mydata_train$Malignant
+
+roc_obj <- roc(truth_labels, pred_scores, levels = c(0, 1))
+
+# 計算ROC曲線的置信區間
+ci_obj <- ci(roc_obj)
+ci_obj
+
+ci_lower <- ci_obj[1]
+ci_upper <- ci_obj[3]
+
+# 將其四捨五入到三個小數位
+ci_lower <- round(ci_lower, 3)
+ci_upper <- round(ci_upper, 3)
+
+# 輸出結果
+print(paste0("95% CI: ", ci_lower, "-", ci_upper))
+
+
+
+
+
+
+ROC_101_1 <- mlp_fit %>%
+augment(Mydata_train) %>%
+roc_curve(Malignant, .pred_1)
+
+# 提取置信區間的座標
+ci_df <- data.frame(
+  Sensitivity = ROC_101_1$sensitivities,
+  Specificity = 1 - ROC_101_1$specificities,
+  Lower = ci_obj$lower,
+  Upper = ci_obj$upper
+)
+
+# 使用ggroc()函數繪製ROC曲線
+ggroc(roc_obj) +
+  geom_line(data = ci_df, aes(x = Specificity, y = Lower), linetype = "dashed") +
+  geom_line(data = ci_df, aes(x = Specificity, y = Upper), linetype = "dashed")
+
+
+ci_lower <- ci_obj[1]
+ci_upper <- ci_obj[3]
+
+# 將其四捨五入到三個小數位
+ci_lower <- round(ci_lower, 3)
+ci_upper <- round(ci_upper, 3)
+
+# 輸出結果
+print(paste0("95% CI: ", ci_lower, "-", ci_upper))
+
+
+```
+
+
+
+
+
+```{r}
+rm(list = ls())
+gc()
+```
+
+
+
+```{r}
+beep(8)
+```
+
+
+
+
+
+
+```{r}
+
+
+
+pred_scores <- mlp_train$.pred_1
+truth_labels <- Mydata_train$Malignant
+
+roc_obj <- roc(truth_labels, pred_scores, levels = c(0, 1))
+
+# 計算ROC曲線的置信區間
+ci_obj <- ci(roc_obj)
+ci_obj
+
+ci_lower <- ci_obj[1]
+ci_upper <- ci_obj[3]
+
+# 將其四捨五入到三個小數位
+ci_lower <- round(ci_lower, 3)
+ci_upper <- round(ci_upper, 3)
+
+# 輸出結果
+print(paste0("95% CI: ", ci_lower, "-", ci_upper))
+
+
+ROC_102_label <- paste0("AUC = ", round(ROC_102[[1, '.estimate']], 3), "\n", "95% CI: ", ci_lower, "-", ci_upper)  # 將小數點位數改為3
+cat(ROC_102_label)
+
+ROC10_test_plt <- mlp_fit %>%
+  augment(Mydata_test) %>%
+  roc_curve(Malignant, .pred_1) %>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_abline(
+    lty = 2, alpha = 0.5,
+    color = "gray50",
+    linewidth = 1.2
+  ) + 
+  geom_path(linewidth = 1.2, color = "salmon") +
+  theme_minimal() +
+  labs(x = "1 - Specificity",
+       y = "Sensitivity",
+       title = "Multilayer Perceptron")+
+  theme(plot.title = element_text(hjust = 0.5)) +
+
+  scale_x_continuous(breaks = seq(0, 1, 0.2)) +  #設定 x 軸刻度
+
+  scale_y_continuous(breaks = seq(0, 1, 0.2)) + #設定 y 軸刻度 
+  annotate(
+  geom = "text",  # 改為 "text" 移除框線
+    x = 0.22,  # 調整 x 座標
+    y = 0.10,  # 調整 y 座標
+    label = ROC_102_label, 
+    hjust = 0,  # 調整文字對齊，0 為左對齊，1 為右對齊
+    size = 4  # 調整文字大小
+  )
+
+
+
+```
+
+
+#繪圖迴圈
+```{r}
+set.seed(2234)
+
+# 將資料集中的 Malignant 變數的水平設定為以1為主
+##for tidymodels machine learning
+Mydata_train$Malignant <- factor(Mydata_train$Malignant, levels = c(1, 0))
+Mydata_train2$Malignant <- factor(Mydata_train2$Malignant, levels = c(1, 0))
+Mydata_test$Malignant <- factor(Mydata_test$Malignant, levels = c(1, 0))
+Mydata_test2$Malignant <- factor(Mydata_test2$Malignant, levels = c(1, 0))
+
+dir.create("Result")
+for (i in seq_len(nrow(gene))) {
+  x1 <- gene[[i, 'number']]
+  x2 <- strsplit(gene[[i, 'feature']], ', ')[[1]] # 分割字符串
+  x3 <- strsplit(gene[[i, 'outcome']], ', ')[[1]] # 分割字符串
+  x4 <- strsplit(gene[[i, 'predictor']], ', ')[[1]] # 分割字符串
+
+  print(x1)
+  print(x2)
+  
+#setup folder
+path1 = paste("Result/", x1, " genes", sep = '')
+dir.create(path1)
+
+
+#5 | Pre - Processing
+  #Mydata_train <- Mydata_train2 %>% select(all_of(x2))
+  #model_recipe <- recipe(Malignant ~ ., data = Mydata_train2)
+
+# 建立一個初始的 recipe
+model_recipe <- recipe(as.formula(paste(paste(x3), "~ ", paste("ID + ", paste(x4, collapse = " + ")))), data = Mydata_train2)
+# 更新變數角色
+model_recipe <- model_recipe %>% 
+ # update_role(paste(x3), new_role = "outcome") %>%
+ # update_role(paste(x4), new_role = "predictor") %>%
+  update_role(ID, new_role = "id")
+
+print(summary(model_recipe))
+
+
+
+#nornalized, recenter等放這邊
+
+# 使用訓練數據集建立處理參數(nornalized, recenter等)
+model_recipe <- model_recipe %>% prep(training = Mydata_train2)
+
+# 使用配方來轉換訓練數據和測試數據
+#tidymodel不需要
+#Mydata_train <- bake(model_recipe, new_data = Mydata_train2)
+#Mydata_test <- bake(model_recipe, new_data = Mydata_test2)
+
+# 指定分析變數
+#model_recipe <- recipe(as.formula(paste(paste(x3), "~ ", paste(x4, collapse = " + "))), data = Mydata_train2)
+
+
+
+#6 | Training - Testing - Cross Validation
+Mydata_cv <- vfold_cv(Mydata_train, v = 5, repeats = 5, strata = "Malignant")
+
+#7 | Modelling with Machine Learning Algorithms
+#7.0 | Set up defaults
+#set metric
+for (i in seq_len(nrow(metric))) {
+#mset <- metric_set(!!sym(metric[[i, 'mset']]))
+mbest <- metric[[i, 'mbest']]
+#mset
+mbest
+
+path2 = paste("Result/", x1, " genes/", mbest, sep = '')
+dir.create(path2)
+path3 = paste(x1, "_", mbest, sep = '')
+path3
+
+#output progress
+cat("\n", x1, " genes\n", mbest, "\n", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), sep = "")
+
+
+#7.1| Logistic Regression
+cat("\n", x1, " genes-log\n", mbest, "\n", format(Sys.time(), "%Y-%m-%d %H:%M:%S", "\n"), sep = "")
+
+
+#Collect metrics.
+log_tune_results[[path3]] %>%
+  collect_metrics() %>%
+  arrange(desc(mean))
+
+#Fit model log
+#Use best config to fit model to training data.
+log_fit <- log_wf %>%
+  finalize_workflow(select_best(log_tune_results[[path3]], metric = mbest)) %>%
+  fit(Mydata_train)
+
+#Collect performance
+#Training set result
+log.a <- log_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  accuracy(Malignant, .pred_class)
+
+log.f <- log_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  f_meas(Malignant, .pred_class)
+
+log.p <- log_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  precision(Malignant, .pred_class)
+
+log.r <- log_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  recall(Malignant, .pred_class)
+
+log.sen <- log_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  sens(Malignant, .pred_class)
+
+log.spe <- log_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  spec(Malignant, .pred_class)
+
+log.ppv <- log_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  ppv(Malignant, .pred_class)
+
+log.npv <- log_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  npv(Malignant, .pred_class)
+
+ROC_011 <- log_fit %>%
+  augment(Mydata_train) %>%
+  roc_auc(Malignant, .pred_1)
+ROC_011
+
+Index_01 <- c()
+l = list(log.a, log.f, log.p, log.r, log.sen, log.spe, log.ppv, log.npv, ROC_011)
+Index_01 <- rbindlist(l, use.names=TRUE, fill=TRUE)
+Index_01 <- Index_01[, ".estimator" := NULL]
+Index_01
+
+# 計算ROC曲線的置信區間
+pred_scores <- log_train$.pred_1
+truth_labels <- Mydata_train$Malignant
+
+roc_obj <- roc(truth_labels, pred_scores, levels = c(0, 1))
+
+ci_obj <- ci(roc_obj)
+ci_obj
+
+ci_lower <- ci_obj[1]
+ci_upper <- ci_obj[3]
+
+# 將其四捨五入到三個小數位
+ci_lower <- round(ci_lower, 3)
+ci_upper <- round(ci_upper, 3)
+
+# 輸出結果
+ROC_011_label <- paste0("AUC = ", round(ROC_011[[1, '.estimate']], 3), "\n", "95% CI: ", ci_lower, "-", ci_upper)  # 將小數點位數改為3
+
+ROC01_train_plt <- log_fit %>%
+  augment(Mydata_train) %>%
+  roc_curve(Malignant, .pred_1) %>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_abline(
+    lty = 2, alpha = 0.5,
+    color = "gray50",
+    linewidth = 1.2
+  ) + 
+  geom_path(linewidth = 1.2, color = "salmon") +
+  theme_minimal() +
+  labs(x = "1 - Specificity",
+       y = "Sensitivity",
+       title = "Logistic Regression")+
+  theme(plot.title = element_text(hjust = 0.5)) +
+
+  scale_x_continuous(breaks = seq(0, 1, 0.2)) +  #設定 x 軸刻度
+
+  scale_y_continuous(breaks = seq(0, 1, 0.2)) + #設定 y 軸刻度 
+  annotate(
+  geom = "text",  # 改為 "text" 移除框線
+    x = 0.22,  # 調整 x 座標
+    y = 0.10,  # 調整 y 座標
+    label = ROC_011_label, 
+    hjust = 0,  # 調整文字對齊，0 為左對齊，1 為右對齊
+    size = 4  # 調整文字大小
+  )
+
+
+ROC01_train_plt
+
+#Inspect significant features (aka predictors).
+log_fit %>%
+  tidy() %>%
+  mutate(term = fct_reorder(term, estimate)) %>%
+  ggplot(aes(estimate, term, fill = estimate > 0)) +
+  geom_col() +
+  theme(legend.position = "none")
+
+log_train <- log_fit %>%
+  augment(Mydata_train)
+
+log_train <- log_train %>% 
+  mutate(Type = "train") %>%
+  relocate(Type, .before = 1)
+
+#Testing set result
+log.a <- log_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  accuracy(Malignant, .pred_class)
+
+log.f <- log_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  f_meas(Malignant, .pred_class)
+
+log.p <- log_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  precision(Malignant, .pred_class)
+
+log.r <- log_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  recall(Malignant, .pred_class)
+
+log.sen <- log_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  sens(Malignant, .pred_class)
+
+log.spe <- log_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  spec(Malignant, .pred_class)
+
+log.ppv <- log_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  ppv(Malignant, .pred_class)
+
+log.npv <- log_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  npv(Malignant, .pred_class)
+
+ROC_012 <- log_fit %>%
+  augment(Mydata_test) %>%
+  roc_auc(Malignant, .pred_1)
+ROC_012
+
+# 計算ROC曲線的置信區間
+pred_scores <- log_test$.pred_1
+truth_labels <- Mydata_test$Malignant
+
+roc_obj <- roc(truth_labels, pred_scores, levels = c(0, 1))
+
+ci_obj <- ci(roc_obj)
+ci_obj
+
+ci_lower <- ci_obj[1]
+ci_upper <- ci_obj[3]
+
+# 將其四捨五入到三個小數位
+ci_lower <- round(ci_lower, 3)
+ci_upper <- round(ci_upper, 3)
+
+# 輸出結果
+ROC_012_label <- paste0("AUC = ", round(ROC_012[[1, '.estimate']], 3), "\n", "95% CI: ", ci_lower, "-", ci_upper)  # 將小數點位數改為3
+
+ROC01_test_plt <- log_fit %>%
+  augment(Mydata_test) %>%
+  roc_curve(Malignant, .pred_1) %>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_abline(
+    lty = 2, alpha = 0.5,
+    color = "gray50",
+    linewidth = 1.2
+  ) + 
+  geom_path(linewidth = 1.2, color = "salmon") +
+  theme_minimal() +
+  labs(x = "1 - Specificity",
+       y = "Sensitivity",
+       title = "Logistic Regression")+
+  theme(plot.title = element_text(hjust = 0.5)) +
+
+  scale_x_continuous(breaks = seq(0, 1, 0.2)) +  #設定 x 軸刻度
+
+  scale_y_continuous(breaks = seq(0, 1, 0.2)) + #設定 y 軸刻度 
+  annotate(
+  geom = "text",  # 改為 "text" 移除框線
+    x = 0.22,  # 調整 x 座標
+    y = 0.10,  # 調整 y 座標
+    label = ROC_012_label, 
+    hjust = 0,  # 調整文字對齊，0 為左對齊，1 為右對齊
+    size = 4  # 調整文字大小
+  )
+
+
+ROC01_test_plt
+
+log_test <- log_fit %>%
+  augment(Mydata_test)
+
+log_test <- log_test %>% 
+  mutate(Type = "test") %>%
+  relocate(Type, .before = 1)
+
+#Combine
+l = list(Index_01, log.a, log.f, log.p, log.r, log.sen, log.spe, log.ppv, log.npv, ROC_012)
+Index_01 <- rbindlist(l, use.names=TRUE, fill=TRUE)
+Index_01 <- Index_01[, ".estimator" := NULL]
+Index_01
+fileName = paste(path2, '/01log-index-', mbest, '.csv', sep = '')
+write_csv(Index_01, fileName)
+
+#write_csv(Index_01, "01log-index.csv")
+
+
+l = list(log_train, log_test)
+result_01 <- rbindlist(l, use.names=TRUE, fill=TRUE)
+result_01 <- result_01 %>%
+  mutate(Order = row_number()) %>%
+  relocate(Order, .before = 1)
+
+fileName = paste(path2, '/01log-result-', mbest, '.csv', sep = '')
+write_csv(result_01, fileName)
+
+fileName = paste(path2, '/ROC01_train-', mbest, '.png', sep = '')
+png(file=fileName, width=1000, height=1000, res=300)
+print(ROC01_train_plt)
+dev.off()
+
+fileName = paste(path2, '/ROC01_test-', mbest, '.png', sep = '')
+png(file=fileName, width=1000, height=1000, res=300)
+print(ROC01_test_plt)
+dev.off()
+
+
+
+#7.3 | Support Vector Machines
+#Then specify a svm.
+cat("\n", x1, " genes-svm\n", mbest, "\n", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), sep = "")
+
+#Collect metrics.
+svm_tune_results[[path3]] %>%
+  collect_metrics() %>%
+  arrange(desc(mean))
+
+Sys.time()
+
+#Fit model svm
+#Use best config to fit model to training data.
+svm_fit <- svm_wf %>%
+  finalize_workflow(select_best(svm_tune_results[[path3]], metric = mbest)) %>%
+  fit(Mydata_train)
+
+#Collect performance
+#Training set result
+svm.a <- svm_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  accuracy(Malignant, .pred_class)
+
+svm.f <- svm_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  f_meas(Malignant, .pred_class)
+
+svm.p <- svm_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  precision(Malignant, .pred_class)
+
+svm.r <- svm_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  recall(Malignant, .pred_class)
+
+svm.sen <- svm_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  sens(Malignant, .pred_class)
+
+svm.spe <- svm_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  spec(Malignant, .pred_class)
+
+svm.ppv <- svm_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  ppv(Malignant, .pred_class)
+
+svm.npv <- svm_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  npv(Malignant, .pred_class)
+
+ROC_031 <- svm_fit %>%
+  augment(Mydata_train) %>%
+  roc_auc(Malignant, .pred_1)
+ROC_031
+
+Index_03 <- c()
+l = list(svm.a, svm.f, svm.p, svm.r, svm.sen, svm.spe, svm.ppv, svm.npv, ROC_031)
+Index_03 <- rbindlist(l, use.names=TRUE, fill=TRUE)
+Index_03 <- Index_03[, ".estimator" := NULL]
+Index_03
+
+# 計算ROC曲線的置信區間
+pred_scores <- svm_train$.pred_1
+truth_labels <- Mydata_train$Malignant
+
+roc_obj <- roc(truth_labels, pred_scores, levels = c(0, 1))
+
+ci_obj <- ci(roc_obj)
+ci_obj
+
+ci_lower <- ci_obj[1]
+ci_upper <- ci_obj[3]
+
+# 將其四捨五入到三個小數位
+ci_lower <- round(ci_lower, 3)
+ci_upper <- round(ci_upper, 3)
+
+# 輸出結果
+ROC_031_label <- paste0("AUC = ", round(ROC_031[[1, '.estimate']], 3), "\n", "95% CI: ", ci_lower, "-", ci_upper)  # 將小數點位數改為3
+
+ROC03_train_plt <- svm_fit %>%
+  augment(Mydata_train) %>%
+  roc_curve(Malignant, .pred_1) %>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_abline(
+    lty = 2, alpha = 0.5,
+    color = "gray50",
+    linewidth = 1.2
+  ) + 
+  geom_path(linewidth = 1.2, color = "salmon") +
+  theme_minimal() +
+  labs(x = "1 - Specificity",
+       y = "Sensitivity",
+       title = "Support Vector Machines")+
+  theme(plot.title = element_text(hjust = 0.5)) +
+
+  scale_x_continuous(breaks = seq(0, 1, 0.2)) +  #設定 x 軸刻度
+
+  scale_y_continuous(breaks = seq(0, 1, 0.2)) + #設定 y 軸刻度 
+  annotate(
+  geom = "text",  # 改為 "text" 移除框線
+    x = 0.22,  # 調整 x 座標
+    y = 0.10,  # 調整 y 座標
+    label = ROC_031_label, 
+    hjust = 0,  # 調整文字對齊，0 為左對齊，1 為右對齊
+    size = 4  # 調整文字大小
+  )
+
+
+ROC03_train_plt
+
+
+svm_train <- svm_fit %>%
+  augment(Mydata_train)
+
+svm_train <- svm_train %>% 
+  mutate(Type = "train") %>%
+  relocate(Type, .before = 1)
+
+
+#Testing set result
+svm.a <- svm_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  accuracy(Malignant, .pred_class)
+
+svm.f <- svm_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  f_meas(Malignant, .pred_class)
+
+svm.p <- svm_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  precision(Malignant, .pred_class)
+
+svm.r <- svm_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  recall(Malignant, .pred_class)
+
+svm.sen <- svm_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  sens(Malignant, .pred_class)
+
+svm.spe <- svm_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  spec(Malignant, .pred_class)
+
+svm.ppv <- svm_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  ppv(Malignant, .pred_class)
+
+svm.npv <- svm_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  npv(Malignant, .pred_class)
+
+ROC_032 <- svm_fit %>%
+  augment(Mydata_test) %>%
+  roc_auc(Malignant, .pred_1)
+ROC_032
+
+# 計算ROC曲線的置信區間
+pred_scores <- svm_test$.pred_1
+truth_labels <- Mydata_test$Malignant
+
+roc_obj <- roc(truth_labels, pred_scores, levels = c(0, 1))
+
+ci_obj <- ci(roc_obj)
+ci_obj
+
+ci_lower <- ci_obj[1]
+ci_upper <- ci_obj[3]
+
+# 將其四捨五入到三個小數位
+ci_lower <- round(ci_lower, 3)
+ci_upper <- round(ci_upper, 3)
+
+# 輸出結果
+ROC_032_label <- paste0("AUC = ", round(ROC_032[[1, '.estimate']], 3), "\n", "95% CI: ", ci_lower, "-", ci_upper)  # 將小數點位數改為3
+
+ROC03_test_plt <- svm_fit %>%
+  augment(Mydata_test) %>%
+  roc_curve(Malignant, .pred_1) %>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_abline(
+    lty = 2, alpha = 0.5,
+    color = "gray50",
+    linewidth = 1.2
+  ) + 
+  geom_path(linewidth = 1.2, color = "salmon") +
+  theme_minimal() +
+  labs(x = "1 - Specificity",
+       y = "Sensitivity",
+       title = "Support Vector Machines")+
+  theme(plot.title = element_text(hjust = 0.5)) +
+
+  scale_x_continuous(breaks = seq(0, 1, 0.2)) +  #設定 x 軸刻度
+
+  scale_y_continuous(breaks = seq(0, 1, 0.2)) + #設定 y 軸刻度 
+  annotate(
+  geom = "text",  # 改為 "text" 移除框線
+    x = 0.22,  # 調整 x 座標
+    y = 0.10,  # 調整 y 座標
+    label = ROC_032_label, 
+    hjust = 0,  # 調整文字對齊，0 為左對齊，1 為右對齊
+    size = 4  # 調整文字大小
+  )
+
+
+ROC03_test_plt
+
+svm_test <- svm_fit %>%
+  augment(Mydata_test)
+
+svm_test <- svm_test %>% 
+  mutate(Type = "test") %>%
+  relocate(Type, .before = 1)
+
+#Combine
+l = list(Index_03, svm.a, svm.f, svm.p, svm.r, svm.sen, svm.spe, svm.ppv, svm.npv, ROC_032)
+Index_03 <- rbindlist(l, use.names=TRUE, fill=TRUE)
+Index_03 <- Index_03[, ".estimator" := NULL]
+Index_03
+fileName = paste(path2, '/03svm-index-', mbest, '.csv', sep = '')
+write_csv(Index_03, fileName)
+
+#write_csv(Index_03, "03svm-index.csv")
+
+
+l = list(svm_train, svm_test)
+result_03 <- rbindlist(l, use.names=TRUE, fill=TRUE)
+result_03 <- result_03 %>%
+  mutate(Order = row_number()) %>%
+  relocate(Order, .before = 1)
+
+fileName = paste(path2, '/03svm-result-', mbest, '.csv', sep = '')
+write_csv(result_03, fileName)
+
+Sys.time()
+
+fileName = paste(path2, '/ROC03_train-', mbest, '.png', sep = '')
+png(file=fileName, width=1000, height=1000, res=300)
+print(ROC03_train_plt)
+dev.off()
+
+fileName = paste(path2, '/ROC03_test-', mbest, '.png', sep = '')
+png(file=fileName, width=1000, height=1000, res=300)
+print(ROC03_test_plt)
+dev.off()
+
+
+#7.6 | Random Forest
+cat("\n", x1, " genes-rf\n", mbest, "\n", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), sep = "")
+
+
+#Collect metrics.
+rf_tune_results[[path3]] %>%
+  collect_metrics() %>%
+  arrange(desc(mean))
+
+Sys.time()
+
+#Fit model rf
+#Use best config to fit model to training data.
+rf_fit <- rf_wf %>%
+  finalize_workflow(select_best(rf_tune_results[[path3]], metric = mbest)) %>%
+  fit(Mydata_train)
+
+#Collect performance
+#Training set result
+rf.a <- rf_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  accuracy(Malignant, .pred_class)
+
+rf.f <- rf_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  f_meas(Malignant, .pred_class)
+
+rf.p <- rf_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  precision(Malignant, .pred_class)
+
+rf.r <- rf_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  recall(Malignant, .pred_class)
+
+rf.sen <- rf_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  sens(Malignant, .pred_class)
+
+rf.spe <- rf_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  spec(Malignant, .pred_class)
+
+rf.ppv <- rf_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  ppv(Malignant, .pred_class)
+
+rf.npv <- rf_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  npv(Malignant, .pred_class)
+
+ROC_061 <- rf_fit %>%
+  augment(Mydata_train) %>%
+  roc_auc(Malignant, .pred_1)
+ROC_061
+
+Index_06 <- c()
+l = list(rf.a, rf.f, rf.p, rf.r, rf.sen, rf.spe, rf.ppv, rf.npv, ROC_061)
+Index_06 <- rbindlist(l, use.names=TRUE, fill=TRUE)
+Index_06 <- Index_06[, ".estimator" := NULL]
+Index_06
+
+# 計算ROC曲線的置信區間
+pred_scores <- rf_train$.pred_1
+truth_labels <- Mydata_train$Malignant
+
+roc_obj <- roc(truth_labels, pred_scores, levels = c(0, 1))
+
+ci_obj <- ci(roc_obj)
+ci_obj
+
+ci_lower <- ci_obj[1]
+ci_upper <- ci_obj[3]
+
+# 將其四捨五入到三個小數位
+ci_lower <- round(ci_lower, 3)
+ci_upper <- round(ci_upper, 3)
+
+# 輸出結果
+ROC_061_label <- paste0("AUC = ", round(ROC_061[[1, '.estimate']], 3), "\n", "95% CI: ", ci_lower, "-", ci_upper)  # 將小數點位數改為3
+
+ROC06_train_plt <- rf_fit %>%
+  augment(Mydata_train) %>%
+  roc_curve(Malignant, .pred_1) %>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_abline(
+    lty = 2, alpha = 0.5,
+    color = "gray50",
+    linewidth = 1.2
+  ) + 
+  geom_path(linewidth = 1.2, color = "salmon") +
+  theme_minimal() +
+  labs(x = "1 - Specificity",
+       y = "Sensitivity",
+       title = "Random Forest")+
+  theme(plot.title = element_text(hjust = 0.5)) +
+
+  scale_x_continuous(breaks = seq(0, 1, 0.2)) +  #設定 x 軸刻度
+
+  scale_y_continuous(breaks = seq(0, 1, 0.2)) + #設定 y 軸刻度 
+  annotate(
+  geom = "text",  # 改為 "text" 移除框線
+    x = 0.22,  # 調整 x 座標
+    y = 0.10,  # 調整 y 座標
+    label = ROC_061_label, 
+    hjust = 0,  # 調整文字對齊，0 為左對齊，1 為右對齊
+    size = 4  # 調整文字大小
+  )
+
+
+ROC06_train_plt
+
+
+rf_train <- rf_fit %>%
+  augment(Mydata_train)
+
+rf_train <- rf_train %>% 
+  mutate(Type = "train") %>%
+  relocate(Type, .before = 1)
+
+
+#Testing set result
+rf.a <- rf_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  accuracy(Malignant, .pred_class)
+
+rf.f <- rf_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  f_meas(Malignant, .pred_class)
+
+rf.p <- rf_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  precision(Malignant, .pred_class)
+
+rf.r <- rf_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  recall(Malignant, .pred_class)
+
+rf.sen <- rf_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  sens(Malignant, .pred_class)
+
+rf.spe <- rf_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  spec(Malignant, .pred_class)
+
+rf.ppv <- rf_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  ppv(Malignant, .pred_class)
+
+rf.npv <- rf_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  npv(Malignant, .pred_class)
+
+ROC_062 <- rf_fit %>%
+  augment(Mydata_test) %>%
+  roc_auc(Malignant, .pred_1)
+ROC_062
+
+# 計算ROC曲線的置信區間
+pred_scores <- rf_test$.pred_1
+truth_labels <- Mydata_test$Malignant
+
+roc_obj <- roc(truth_labels, pred_scores, levels = c(0, 1))
+
+ci_obj <- ci(roc_obj)
+ci_obj
+
+ci_lower <- ci_obj[1]
+ci_upper <- ci_obj[3]
+
+# 將其四捨五入到三個小數位
+ci_lower <- round(ci_lower, 3)
+ci_upper <- round(ci_upper, 3)
+
+# 輸出結果
+ROC_062_label <- paste0("AUC = ", round(ROC_062[[1, '.estimate']], 3), "\n", "95% CI: ", ci_lower, "-", ci_upper)  # 將小數點位數改為3
+
+ROC06_test_plt <- rf_fit %>%
+  augment(Mydata_test) %>%
+  roc_curve(Malignant, .pred_1) %>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_abline(
+    lty = 2, alpha = 0.5,
+    color = "gray50",
+    linewidth = 1.2
+  ) + 
+  geom_path(linewidth = 1.2, color = "salmon") +
+  theme_minimal() +
+  labs(x = "1 - Specificity",
+       y = "Sensitivity",
+       title = "Random Forest")+
+  theme(plot.title = element_text(hjust = 0.5)) +
+
+  scale_x_continuous(breaks = seq(0, 1, 0.2)) +  #設定 x 軸刻度
+
+  scale_y_continuous(breaks = seq(0, 1, 0.2)) + #設定 y 軸刻度 
+  annotate(
+  geom = "text",  # 改為 "text" 移除框線
+    x = 0.22,  # 調整 x 座標
+    y = 0.10,  # 調整 y 座標
+    label = ROC_062_label, 
+    hjust = 0,  # 調整文字對齊，0 為左對齊，1 為右對齊
+    size = 4  # 調整文字大小
+  )
+
+
+ROC06_test_plt
+
+rf_test <- rf_fit %>%
+  augment(Mydata_test)
+
+rf_test <- rf_test %>% 
+  mutate(Type = "test") %>%
+  relocate(Type, .before = 1)
+
+#Combine
+l = list(Index_06, rf.a, rf.f, rf.p, rf.r, rf.sen, rf.spe, rf.ppv, rf.npv, ROC_062)
+Index_06 <- rbindlist(l, use.names=TRUE, fill=TRUE)
+Index_06 <- Index_06[, ".estimator" := NULL]
+Index_06
+Index_06
+fileName = paste(path2, '/06rf-index-', mbest, '.csv', sep = '')
+write_csv(Index_06, fileName)
+
+#write_csv(Index_06, "06rf-index.csv")
+
+
+l = list(rf_train, rf_test)
+result_06 <- rbindlist(l, use.names=TRUE, fill=TRUE)
+result_06 <- result_06 %>%
+  mutate(Order = row_number()) %>%
+  relocate(Order, .before = 1)
+
+fileName = paste(path2, '/06rf-result-', mbest, '.csv', sep = '')
+write_csv(result_06, fileName)
+#write_csv(result_06, "06rf-result.csv")
+
+Sys.time()
+
+fileName = paste(path2, '/ROC06_train-', mbest, '.png', sep = '')
+png(file=fileName, width=1000, height=1000, res=300)
+print(ROC06_train_plt)
+dev.off()
+
+fileName = paste(path2, '/ROC06_test-', mbest, '.png', sep = '')
+png(file=fileName, width=1000, height=1000, res=300)
+print(ROC06_test_plt)
+dev.off()
+
+
+#7.9 | Gradient boosting algorithms - XGBoost
+#Tuning
+#Then specify a gradient boosting model.
+cat("\n", x1, " genes-xg\n", mbest, "\n", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), sep = "")
+
+#Collect metrics.
+xg_tune_results[[path3]] %>%
+  collect_metrics() %>%
+  arrange(desc(mean))
+
+Sys.time()
+
+
+#Fit model xg
+#Use best config to fit model to training data.
+xg_fit <- xg_wf %>%
+  finalize_workflow(select_best(xg_tune_results[[path3]], metric = mbest)) %>%
+  fit(Mydata_train)
+
+#Collect performance
+#Training set result
+xg.a <- xg_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  accuracy(Malignant, .pred_class)
+
+xg.f <- xg_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  f_meas(Malignant, .pred_class)
+
+xg.p <- xg_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  precision(Malignant, .pred_class)
+
+xg.r <- xg_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  recall(Malignant, .pred_class)
+
+xg.sen <- xg_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  sens(Malignant, .pred_class)
+
+xg.spe <- xg_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  spec(Malignant, .pred_class)
+
+xg.ppv <- xg_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  ppv(Malignant, .pred_class)
+
+xg.npv <- xg_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  npv(Malignant, .pred_class)
+
+ROC_091 <- xg_fit %>%
+  augment(Mydata_train) %>%
+  roc_auc(Malignant, .pred_1)
+ROC_091
+
+Index_09 <- c()
+l = list(xg.a, xg.f, xg.p, xg.r, xg.sen, xg.spe, xg.ppv, xg.npv, ROC_091)
+Index_09 <- rbindlist(l, use.names=TRUE, fill=TRUE)
+Index_09 <- Index_09[, ".estimator" := NULL]
+Index_09
+
+# 計算ROC曲線的置信區間
+pred_scores <- xg_train$.pred_1
+truth_labels <- Mydata_train$Malignant
+
+roc_obj <- roc(truth_labels, pred_scores, levels = c(0, 1))
+
+ci_obj <- ci(roc_obj)
+ci_obj
+
+ci_lower <- ci_obj[1]
+ci_upper <- ci_obj[3]
+
+# 將其四捨五入到三個小數位
+ci_lower <- round(ci_lower, 3)
+ci_upper <- round(ci_upper, 3)
+
+# 輸出結果
+ROC_091_label <- paste0("AUC = ", round(ROC_091[[1, '.estimate']], 3), "\n", "95% CI: ", ci_lower, "-", ci_upper)  # 將小數點位數改為3
+
+
+ROC09_train_plt <- xg_fit %>%
+  augment(Mydata_train) %>%
+  roc_curve(Malignant, .pred_1) %>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_abline(
+    lty = 2, alpha = 0.5,
+    color = "gray50",
+    linewidth = 1.2
+  ) + 
+  geom_path(linewidth = 1.2, color = "salmon") +
+  theme_minimal() +
+  labs(x = "1 - Specificity",
+       y = "Sensitivity",
+       title = "XGBoost")+
+  theme(plot.title = element_text(hjust = 0.5)) +
+
+  scale_x_continuous(breaks = seq(0, 1, 0.2)) +  #設定 x 軸刻度
+
+  scale_y_continuous(breaks = seq(0, 1, 0.2)) + #設定 y 軸刻度 
+  annotate(
+  geom = "text",  # 改為 "text" 移除框線
+    x = 0.22,  # 調整 x 座標
+    y = 0.10,  # 調整 y 座標
+    label = ROC_091_label, 
+    hjust = 0,  # 調整文字對齊，0 為左對齊，1 為右對齊
+    size = 4  # 調整文字大小
+  )
+
+
+ROC09_train_plt
+
+
+
+#Check out important features (aka predictors).
+importances <- xgboost::xgb.importance(model = extract_fit_engine(xg_fit))
+importances %>%
+  mutate(Feature = fct_reorder(Feature, Gain)) %>%
+  ggplot(aes(Gain, Feature)) +
+  geom_col()
+
+
+
+xg_train <- xg_fit %>%
+  augment(Mydata_train)
+
+xg_train <- xg_train %>% 
+  mutate(Type = "train") %>%
+  relocate(Type, .before = 1)
+
+
+#Testing set result
+xg.a <- xg_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  accuracy(Malignant, .pred_class)
+
+xg.f <- xg_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  f_meas(Malignant, .pred_class)
+
+xg.p <- xg_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  precision(Malignant, .pred_class)
+
+xg.r <- xg_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  recall(Malignant, .pred_class)
+
+xg.sen <- xg_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  sens(Malignant, .pred_class)
+
+xg.spe <- xg_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  spec(Malignant, .pred_class)
+
+xg.ppv <- xg_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  ppv(Malignant, .pred_class)
+
+xg.npv <- xg_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  npv(Malignant, .pred_class)
+
+ROC_092 <- xg_fit %>%
+  augment(Mydata_test) %>%
+  roc_auc(Malignant, .pred_1)
+ROC_092
+
+# 計算ROC曲線的置信區間
+pred_scores <- xg_test$.pred_1
+truth_labels <- Mydata_test$Malignant
+
+roc_obj <- roc(truth_labels, pred_scores, levels = c(0, 1))
+
+ci_obj <- ci(roc_obj)
+ci_obj
+
+ci_lower <- ci_obj[1]
+ci_upper <- ci_obj[3]
+
+# 將其四捨五入到三個小數位
+ci_lower <- round(ci_lower, 3)
+ci_upper <- round(ci_upper, 3)
+
+# 輸出結果
+ROC_092_label <- paste0("AUC = ", round(ROC_092[[1, '.estimate']], 3), "\n", "95% CI: ", ci_lower, "-", ci_upper)  # 將小數點位數改為3
+
+ROC09_test_plt <- xg_fit %>%
+  augment(Mydata_test) %>%
+  roc_curve(Malignant, .pred_1) %>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_abline(
+    lty = 2, alpha = 0.5,
+    color = "gray50",
+    linewidth = 1.2
+  ) + 
+  geom_path(linewidth = 1.2, color = "salmon") +
+  theme_minimal() +
+  labs(x = "1 - Specificity",
+       y = "Sensitivity",
+       title = "XGBoost")+
+  theme(plot.title = element_text(hjust = 0.5)) +
+
+  scale_x_continuous(breaks = seq(0, 1, 0.2)) +  #設定 x 軸刻度
+
+  scale_y_continuous(breaks = seq(0, 1, 0.2)) + #設定 y 軸刻度 
+  annotate(
+  geom = "text",  # 改為 "text" 移除框線
+    x = 0.22,  # 調整 x 座標
+    y = 0.10,  # 調整 y 座標
+    label = ROC_092_label, 
+    hjust = 0,  # 調整文字對齊，0 為左對齊，1 為右對齊
+    size = 4  # 調整文字大小
+  )
+
+
+ROC09_test_plt
+
+xg_test <- xg_fit %>%
+  augment(Mydata_test)
+
+xg_test <- xg_test %>% 
+  mutate(Type = "test") %>%
+  relocate(Type, .before = 1)
+
+#Combine
+l = list(Index_09, xg.a, xg.f, xg.p, xg.r, xg.sen, xg.spe, xg.ppv, xg.npv, ROC_092)
+Index_09 <- rbindlist(l, use.names=TRUE, fill=TRUE)
+Index_09 <- Index_09[, ".estimator" := NULL]
+Index_09
+fileName = paste(path2, '/09xg-index-', mbest, '.csv', sep = '')
+write_csv(Index_09, fileName)
+
+#write_csv(Index_09, "09xg-index.csv")
+
+
+
+l = list(xg_train, xg_test)
+result_09 <- rbindlist(l, use.names=TRUE, fill=TRUE)
+result_09 <- result_09 %>%
+  mutate(Order = row_number()) %>%
+  relocate(Order, .before = 1)
+
+fileName = paste(path2, '/09xg-result-', mbest, '.csv', sep = '')
+write_csv(result_09, fileName)
+
+
+#write_csv(result_09, "09xg-result.csv")
+
+Sys.time()
+
+fileName = paste(path2, '/ROC09_train-', mbest, '.png', sep = '')
+png(file=fileName, width=1000, height=1000, res=300)
+print(ROC09_train_plt)
+dev.off()
+
+fileName = paste(path2, '/ROC09_test-', mbest, '.png', sep = '')
+png(file=fileName, width=1000, height=1000, res=300)
+print(ROC09_test_plt)
+dev.off()
+
+
+#7.10 | Multilayer Perceptron
+
+#Collect metrics.
+mlp_tune_results[[path3]] %>%
+  collect_metrics() %>%
+  arrange(desc(mean))
+
+#Visualize the results.
+autoplot(mlp_tune_results[[path3]])
+
+#Collect metrics.
+mlp_tune_results[[path3]] %>%
+  collect_metrics() %>%
+  arrange(desc(mean))
+
+Sys.time()
+
+#Fit model mlp
+#Use best config to fit model to training data.
+mlp_fit <- mlp_wf %>%
+  finalize_workflow(select_best(mlp_tune_results[[path3]], metric = mbest)) %>%
+  fit(Mydata_train)
+
+#Collect performance
+#Training set result
+mlp.a <- mlp_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  accuracy(Malignant, .pred_class)
+
+mlp.f <- mlp_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  f_meas(Malignant, .pred_class)
+
+mlp.p <- mlp_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  precision(Malignant, .pred_class)
+
+mlp.r <- mlp_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  recall(Malignant, .pred_class)
+
+mlp.sen <- mlp_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  sens(Malignant, .pred_class)
+
+mlp.spe <- mlp_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  spec(Malignant, .pred_class)
+
+mlp.ppv <- mlp_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  ppv(Malignant, .pred_class)
+
+mlp.npv <- mlp_fit %>%
+  augment(Mydata_train, type.predict = "response") %>%
+  npv(Malignant, .pred_class)
+
+ROC_101 <- mlp_fit %>%
+  augment(Mydata_train) %>%
+  roc_auc(Malignant, .pred_1)
+ROC_101
+
+Index_10 <- c()
+l = list(mlp.a, mlp.f, mlp.p, mlp.r, mlp.sen, mlp.spe, mlp.ppv, mlp.npv, ROC_101)
+Index_10 <- rbindlist(l, use.names=TRUE, fill=TRUE)
+Index_10 <- Index_10[, ".estimator" := NULL]
+Index_10
+
+# 計算ROC曲線的置信區間
+pred_scores <- mlp_train$.pred_1
+truth_labels <- Mydata_train$Malignant
+
+roc_obj <- roc(truth_labels, pred_scores, levels = c(0, 1))
+
+ci_obj <- ci(roc_obj)
+ci_obj
+
+ci_lower <- ci_obj[1]
+ci_upper <- ci_obj[3]
+
+# 將其四捨五入到三個小數位
+ci_lower <- round(ci_lower, 3)
+ci_upper <- round(ci_upper, 3)
+
+# 輸出結果
+ROC_101_label <- paste0("AUC = ", round(ROC_101[[1, '.estimate']], 3), "\n", "95% CI: ", ci_lower, "-", ci_upper)  # 將小數點位數改為3
+
+ROC10_train_plt <- mlp_fit %>%
+  augment(Mydata_train) %>%
+  roc_curve(Malignant, .pred_1) %>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_abline(
+    lty = 2, alpha = 0.5,
+    color = "gray50",
+    linewidth = 1.2
+  ) + 
+  geom_path(linewidth = 1.2, color = "salmon") +
+  theme_minimal() +
+  labs(x = "1 - Specificity",
+       y = "Sensitivity",
+       title = "Multilayer Perceptron")+
+  theme(plot.title = element_text(hjust = 0.5)) +
+
+  scale_x_continuous(breaks = seq(0, 1, 0.2)) +  #設定 x 軸刻度
+
+  scale_y_continuous(breaks = seq(0, 1, 0.2)) + #設定 y 軸刻度 
+  annotate(
+  geom = "text",  # 改為 "text" 移除框線
+    x = 0.22,  # 調整 x 座標
+    y = 0.10,  # 調整 y 座標
+    label = ROC_101_label, 
+    hjust = 0,  # 調整文字對齊，0 為左對齊，1 為右對齊
+    size = 4  # 調整文字大小
+  )
+
+
+ROC10_train_plt
+
+
+
+mlp_train <- mlp_fit %>%
+  augment(Mydata_train)
+
+mlp_train <- mlp_train %>% 
+  mutate(Type = "train") %>%
+  relocate(Type, .before = 1)
+
+
+#Testing set result
+mlp.a <- mlp_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  accuracy(Malignant, .pred_class)
+
+mlp.f <- mlp_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  f_meas(Malignant, .pred_class)
+
+mlp.p <- mlp_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  precision(Malignant, .pred_class)
+
+mlp.r <- mlp_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  recall(Malignant, .pred_class)
+
+mlp.sen <- mlp_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  sens(Malignant, .pred_class)
+
+mlp.spe <- mlp_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  spec(Malignant, .pred_class)
+
+mlp.ppv <- mlp_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  ppv(Malignant, .pred_class)
+
+mlp.npv <- mlp_fit %>%
+  augment(Mydata_test, type.predict = "response") %>%
+  npv(Malignant, .pred_class)
+
+ROC_102 <- mlp_fit %>%
+  augment(Mydata_test) %>%
+  roc_auc(Malignant, .pred_1)
+ROC_102
+
+# 計算ROC曲線的置信區間
+pred_scores <- mlp_test$.pred_1
+truth_labels <- Mydata_test$Malignant
+
+roc_obj <- roc(truth_labels, pred_scores, levels = c(0, 1))
+
+ci_obj <- ci(roc_obj)
+ci_obj
+
+ci_lower <- ci_obj[1]
+ci_upper <- ci_obj[3]
+
+# 將其四捨五入到三個小數位
+ci_lower <- round(ci_lower, 3)
+ci_upper <- round(ci_upper, 3)
+
+# 輸出結果
+ROC_102_label <- paste0("AUC = ", round(ROC_102[[1, '.estimate']], 3), "\n", "95% CI: ", ci_lower, "-", ci_upper)  # 將小數點位數改為3
+
+ROC10_test_plt <- mlp_fit %>%
+  augment(Mydata_test) %>%
+  roc_curve(Malignant, .pred_1) %>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_abline(
+    lty = 2, alpha = 0.5,
+    color = "gray50",
+    linewidth = 1.2
+  ) + 
+  geom_path(linewidth = 1.2, color = "salmon") +
+  theme_minimal() +
+  labs(x = "1 - Specificity",
+       y = "Sensitivity",
+       title = "Multilayer Perceptron")+
+  theme(plot.title = element_text(hjust = 0.5)) +
+
+  scale_x_continuous(breaks = seq(0, 1, 0.2)) +  #設定 x 軸刻度
+
+  scale_y_continuous(breaks = seq(0, 1, 0.2)) + #設定 y 軸刻度 
+  annotate(
+  geom = "text",  # 改為 "text" 移除框線
+    x = 0.22,  # 調整 x 座標
+    y = 0.10,  # 調整 y 座標
+    label = ROC_102_label, 
+    hjust = 0,  # 調整文字對齊，0 為左對齊，1 為右對齊
+    size = 4  # 調整文字大小
+  )
+
+
+ROC10_test_plt
+
+
+
+mlp_test <- mlp_fit %>%
+  augment(Mydata_test)
+
+mlp_test <- mlp_test %>% 
+  mutate(Type = "test") %>%
+  relocate(Type, .before = 1)
+
+#Combine
+l = list(Index_10, mlp.a, mlp.f, mlp.p, mlp.r, mlp.sen, mlp.spe, mlp.ppv, mlp.npv, ROC_102)
+Index_10 <- rbindlist(l, use.names=TRUE, fill=TRUE)
+Index_10 <- Index_10[, ".estimator" := NULL]
+Index_10
+fileName = paste(path2, '/10mlp-index-', mbest, '.csv', sep = '')
+write_csv(Index_10, fileName)
+
+
+l = list(mlp_train, mlp_test)
+result_10 <- rbindlist(l, use.names=TRUE, fill=TRUE)
+result_10 <- result_10 %>%
+  mutate(Order = row_number()) %>%
+  relocate(Order, .before = 1)
+
+fileName = paste(path2, '/10mlp-result-', mbest, '.csv', sep = '')
+write_csv(result_10, fileName)
+
+Sys.time()
+
+
+fileName = paste(path2, '/ROC10_train-', mbest, '.png', sep = '')
+png(file=fileName, width=1000, height=1000, res=300)
+print(ROC10_train_plt)
+dev.off()
+
+fileName = paste(path2, '/ROC10_test-', mbest, '.png', sep = '')
+png(file=fileName, width=1000, height=1000, res=300)
+print(ROC10_test_plt)
+dev.off()
+
+
+#Combined data
+fileName = paste(path2, '/', x1, ' gene-train-', mbest, '.png', sep = '')
+plot_list <- ggarrange(ROC01_train_plt, ROC10_train_plt, ROC06_train_plt, ROC03_train_plt, ROC09_train_plt,
+          ncol = 5,
+          nrow = 1)
+png(file=fileName, width=4000, height=1000, res=300)
+print(plot_list)
+dev.off()
+
+fileName = paste(path2, '/', x1, ' gene-test-', mbest, '.png', sep = '')
+plot_list <- ggarrange(ROC01_test_plt, ROC10_test_plt, ROC06_test_plt, ROC03_test_plt, ROC09_test_plt,
+          ncol = 5,
+          nrow = 1)
+
+png(file=fileName, width=4000, height=1000, res=300)
+print(plot_list)
+dev.off()
+
+
+cbindlist <- function(list) {
+	n <- length(list)
+	res <- NULL
+	for (i in seq(n)) res <- cbind(res, list[[i]])
+	return(res)
+}
+l = list(Index_01, Index_10, Index_06, Index_03, Index_09)
+Indexs <- cbindlist(l)
+colnames(Indexs)<-c("Logistic Regression", ".estimate", "Multilayer Perceptron", ".estimate", "Random Forest", ".estimate", "Support Vector Machines", ".estimate", "XGBoost", ".estimate") 
+Indexs
+
+fileName = paste(path2, '/Indexs-', x1, ' gene-', mbest, '.csv', sep = '')
+fwrite(Indexs, fileName, row.names=T)
+
+}
+}
+```
+
+
+
+
